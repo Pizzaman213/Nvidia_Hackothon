@@ -1,0 +1,122 @@
+services:
+  # Backend API with NVIDIA Nemotron
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: babysitter-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///./data/babysitter.db}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - ALLOWED_ORIGINS=http://localhost:3000,http://frontend:3000
+      - DEBUG=${DEBUG:-True}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-key-change-in-production}
+      - ENABLE_CONTENT_MODERATION=${ENABLE_CONTENT_MODERATION:-True}
+      - ENABLE_VOICE=${ENABLE_VOICE:-True}
+      - ENABLE_VISION=${ENABLE_VISION:-True}
+      - VOICE_SERVICE=${VOICE_SERVICE:-elevenlabs}
+    volumes:
+      - ./backend:/app
+      - backend-data:/app/data
+    depends_on:
+      - db
+      - redis
+    networks:
+      - babysitter-network
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Frontend React App
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: babysitter-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_BACKEND_URL=http://localhost:8000
+      - REACT_APP_WS_URL=ws://localhost:8000/ws
+      - REACT_APP_DEBUG=${DEBUG:-false}
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - babysitter-network
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: babysitter-db
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-babysitter}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - babysitter-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching and task queue
+  redis:
+    image: redis:7-alpine
+    container_name: babysitter-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - babysitter-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Nginx reverse proxy (optional, for production)
+  nginx:
+    image: nginx:alpine
+    container_name: babysitter-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - babysitter-network
+    restart: unless-stopped
+    profiles:
+      - production
+
+networks:
+  babysitter-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  backend-data:

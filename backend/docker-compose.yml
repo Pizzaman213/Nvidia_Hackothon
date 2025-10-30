@@ -1,0 +1,29 @@
+services:
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
+      - DATABASE_URL=sqlite:///./babysitter.db
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-key}
+    volumes:
+      - ./audio_temp:/app/audio_temp
+      - ./babysitter.db:/app/babysitter.db
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"  # Changed external port to 6380 to avoid conflict
+    restart: unless-stopped
+
+volumes:
+  audio_temp:
+  db_data:
