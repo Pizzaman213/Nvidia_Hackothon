@@ -18,7 +18,43 @@ interface UseVoiceSynthesisReturn {
   error: string | null;
 }
 
-export const useVoiceSynthesis = (): UseVoiceSynthesisReturn => {
+// Global per-user cooldown tracking (persists across component re-renders)
+const userStopTimestamps: { [sessionId: string]: number[] } = {};
+const MAX_STOPS_PER_MINUTE = 3;
+const COOLDOWN_PERIOD_MS = 60000; // 1 minute
+
+/**
+ * Remove emojis, asterisks, and other non-speech elements from text before TTS
+ */
+const cleanTextForSpeech = (text: string): string => {
+  // Remove emojis (comprehensive pattern covering all emoji Unicode ranges)
+  // Using character class ranges compatible with ES5
+  let cleaned = text
+    .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '') // Surrogate pairs (emojis)
+    .replace(/[\u2600-\u27BF]/g, '') // Miscellaneous symbols
+    .replace(/[\u2700-\u27BF]/g, '') // Dingbats
+    .replace(/[\u2300-\u23FF]/g, '') // Miscellaneous technical
+    .replace(/[\u2B50-\u2B55]/g, '') // Stars and other symbols
+    .replace(/[\u2190-\u21FF]/g, '') // Arrows
+    .replace(/[\u2600-\u26FF]/g, '') // Miscellaneous symbols
+    .replace(/[\u2700-\u27BF]/g, ''); // Dingbats
+
+  // Remove asterisks (used for markdown emphasis/bold)
+  cleaned = cleaned.replace(/\*/g, '');
+
+  // Remove multiple spaces created by emoji/asterisk removal
+  cleaned = cleaned.replace(/\s+/g, ' ');
+
+  // Remove standalone punctuation that may be left over
+  cleaned = cleaned.replace(/\s+([.!?,;:])\s+/g, '$1 ');
+
+  // Strip leading/trailing whitespace
+  cleaned = cleaned.trim();
+
+  return cleaned;
+};
+
+export const useVoiceSynthesis = (sessionId?: string): UseVoiceSynthesisReturn => {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [isSupported, setIsSupported] = useState(false);
@@ -70,10 +106,19 @@ export const useVoiceSynthesis = (): UseVoiceSynthesisReturn => {
         return;
       }
 
+      // Clean text: remove emojis and other non-speech elements
+      const cleanedText = cleanTextForSpeech(text);
+
+      // If after cleaning there's no text left, don't speak
+      if (!cleanedText || !cleanedText.trim()) {
+        console.warn('No readable text found after cleaning emojis');
+        return;
+      }
+
       // Cancel any ongoing speech
       window.speechSynthesis.cancel();
 
-      const utterance = new SpeechSynthesisUtterance(text);
+      const utterance = new SpeechSynthesisUtterance(cleanedText);
 
       // Set voice properties
       if (selectedVoice) {
@@ -119,12 +164,38 @@ export const useVoiceSynthesis = (): UseVoiceSynthesisReturn => {
   );
 
   const stop = useCallback(() => {
-    if (window.speechSynthesis) {
-      window.speechSynthesis.cancel();
-      setIsSpeaking(false);
-      setIsPaused(false);
+    if (!window.speechSynthesis) return;
+
+    // Use session ID for per-user tracking, fallback to 'default' if no session
+    const userId = sessionId || 'default';
+    const now = Date.now();
+
+    // Initialize timestamps array for this user if it doesn't exist
+    if (!userStopTimestamps[userId]) {
+      userStopTimestamps[userId] = [];
     }
-  }, []);
+
+    // Clean up old timestamps (older than 1 minute)
+    userStopTimestamps[userId] = userStopTimestamps[userId].filter(
+      (timestamp) => now - timestamp < COOLDOWN_PERIOD_MS
+    );
+
+    // Check if user has exceeded stop limit
+    if (userStopTimestamps[userId].length >= MAX_STOPS_PER_MINUTE) {
+      console.warn(`Stop button cooldown active for user ${userId}. Please wait before stopping again.`);
+      setError('Please wait a moment before stopping again.');
+      setTimeout(() => setError(null), 2000); // Clear error after 2 seconds
+      return;
+    }
+
+    // Record this stop press for this user
+    userStopTimestamps[userId].push(now);
+
+    // Perform stop action
+    window.speechSynthesis.cancel();
+    setIsSpeaking(false);
+    setIsPaused(false);
+  }, [sessionId]);
 
   const pause = useCallback(() => {
     if (window.speechSynthesis && isSpeaking) {

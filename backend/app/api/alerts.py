@@ -7,6 +7,9 @@ from typing import List
 
 from app.database.db import get_db
 from app.models.alert import SafetyAlertDB, AlertCreate, AlertResponse
+from app.utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
@@ -62,6 +65,8 @@ async def resolve_alert(alert_id: int, db: Session = Depends(get_db)):
     """
     Mark an alert as resolved
     """
+    logger.info(f"Resolving alert: {alert_id}")
+
     alert = db.query(SafetyAlertDB).filter(SafetyAlertDB.id == alert_id).first()
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")

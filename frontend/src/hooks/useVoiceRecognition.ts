@@ -3,6 +3,7 @@
 // ============================================================================
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { logger, LogCategory } from '../utils/logger';
 
 interface UseVoiceRecognitionReturn {
   isListening: boolean;
@@ -15,7 +16,12 @@ interface UseVoiceRecognitionReturn {
   resetTranscript: () => void;
 }
 
-export const useVoiceRecognition = (): UseVoiceRecognitionReturn => {
+// Global per-user cooldown tracking (persists across component re-renders)
+const userStopTimestamps: { [sessionId: string]: number[] } = {};
+const MAX_STOPS_PER_MINUTE = 3;
+const COOLDOWN_PERIOD_MS = 60000; // 1 minute
+
+export const useVoiceRecognition = (sessionId?: string): UseVoiceRecognitionReturn => {
   const [isListening, setIsListening] = useState(false);
   const [transcript, setTranscript] = useState('');
   const [interimTranscript, setInterimTranscript] = useState('');
@@ -25,16 +31,21 @@ export const useVoiceRecognition = (): UseVoiceRecognitionReturn => {
   const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
+    logger.debug(LogCategory.VOICE, 'Initializing voice recognition');
+
     // Check if browser supports Web Speech API
     const SpeechRecognition =
       window.SpeechRecognition || window.webkitSpeechRecognition;
 
     if (!SpeechRecognition) {
-      setError('Speech recognition is not supported in this browser');
+      const errorMsg = 'Speech recognition is not supported in this browser';
+      logger.voice.error(errorMsg);
+      setError(errorMsg);
       setIsSupported(false);
       return;
     }
 
+    logger.info(LogCategory.VOICE, 'Speech recognition supported');
     setIsSupported(true);
 
     // Initialize speech recognition
@@ -45,7 +56,7 @@ export const useVoiceRecognition = (): UseVoiceRecognitionReturn => {
     recognition.maxAlternatives = 1;
 
     recognition.onstart = () => {
-      console.log('Voice recognition started');
+      logger.voice.startListening();
       setIsListening(true);
       setError(null);
     };
@@ -60,8 +71,10 @@ export const useVoiceRecognition = (): UseVoiceRecognitionReturn => {
 
         if (result.isFinal) {
           finalText += transcriptText + ' ';
+          logger.voice.transcript(transcriptText, true);
         } else {
           interimText += transcriptText;
+          logger.voice.transcript(transcriptText, false);
         }
       }
 
@@ -73,8 +86,6 @@ export const useVoiceRecognition = (): UseVoiceRecognitionReturn => {
     };
 
     recognition.onerror = (event: any) => {
-      console.error('Voice recognition error:', event.error);
-
       let errorMessage = 'An error occurred';
 
       switch (event.error) {
@@ -94,12 +105,13 @@ export const useVoiceRecognition = (): UseVoiceRecognitionReturn => {
           errorMessage = `Error: ${event.error}`;
       }
 
+      logger.voice.error(`Voice recognition error: ${event.error}`, new Error(errorMessage));
       setError(errorMessage);
       setIsListening(false);
     };
 
     recognition.onend = () => {
-      console.log('Voice recognition ended');
+      logger.voice.stopListening();
       setIsListening(false);
     };
 
@@ -107,6 +119,7 @@ export const useVoiceRecognition = (): UseVoiceRecognitionReturn => {
 
     return () => {
       if (recognitionRef.current) {
+        logger.debug(LogCategory.VOICE, 'Cleaning up voice recognition');
         recognitionRef.current.stop();
       }
     };
@@ -114,30 +127,60 @@ export const useVoiceRecognition = (): UseVoiceRecognitionReturn => {
 
   const startListening = useCallback(() => {
     if (!recognitionRef.current) {
-      setError('Speech recognition not initialized');
+      const errorMsg = 'Speech recognition not initialized';
+      logger.voice.error(errorMsg);
+      setError(errorMsg);
       return;
     }
 
     try {
+      logger.info(LogCategory.VOICE, 'Attempting to start listening');
       setError(null);
       recognitionRef.current.start();
     } catch (err) {
-      console.error('Error starting recognition:', err);
+      logger.voice.error('Error starting recognition', err as Error);
       setError('Failed to start listening');
     }
   }, []);
 
   const stopListening = useCallback(() => {
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch (err) {
-        console.error('Error stopping recognition:', err);
-      }
+    if (!recognitionRef.current) return;
+
+    // Use session ID for per-user tracking, fallback to 'default' if no session
+    const userId = sessionId || 'default';
+    const now = Date.now();
+
+    // Initialize timestamps array for this user if it doesn't exist
+    if (!userStopTimestamps[userId]) {
+      userStopTimestamps[userId] = [];
     }
-  }, []);
+
+    // Clean up old timestamps (older than 1 minute)
+    userStopTimestamps[userId] = userStopTimestamps[userId].filter(
+      (timestamp) => now - timestamp < COOLDOWN_PERIOD_MS
+    );
+
+    // Check if user has exceeded stop limit
+    if (userStopTimestamps[userId].length >= MAX_STOPS_PER_MINUTE) {
+      logger.warn(LogCategory.VOICE, `Stop button cooldown active for user ${userId}. Please wait before stopping again.`);
+      setError('Please wait a moment before stopping again.');
+      setTimeout(() => setError(null), 2000); // Clear error after 2 seconds
+      return;
+    }
+
+    // Record this stop press for this user
+    userStopTimestamps[userId].push(now);
+
+    try {
+      logger.info(LogCategory.VOICE, 'Stopping voice recognition');
+      recognitionRef.current.stop();
+    } catch (err) {
+      logger.voice.error('Error stopping recognition', err as Error);
+    }
+  }, [sessionId]);
 
   const resetTranscript = useCallback(() => {
+    logger.debug(LogCategory.VOICE, 'Resetting transcript');
     setTranscript('');
     setInterimTranscript('');
   }, []);

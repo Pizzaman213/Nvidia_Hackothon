@@ -5,8 +5,11 @@
 import React, { createContext, useContext, useState, useCallback, ReactNode } from 'react';
 import { Session, SessionContextType } from '../types';
 import api from '../services/api';
+import { logger, LogCategory } from '../utils/logger';
 
 const SessionContext = createContext<SessionContextType | undefined>(undefined);
+
+logger.debug(LogCategory.SESSION, 'SessionContext initialized');
 
 interface SessionProviderProps {
   children: ReactNode;
@@ -17,21 +20,50 @@ export const SessionProvider: React.FC<SessionProviderProps> = ({ children }) =>
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Function to refresh session data from backend
+  const refreshSession = useCallback(async (sessionId: string) => {
+    try {
+      const updatedSession = await api.session.get(sessionId);
+      setSession(updatedSession);
+      localStorage.setItem('current_session', JSON.stringify(updatedSession));
+      logger.debug(LogCategory.SESSION, 'Session refreshed from backend', {
+        sessionId,
+        isActive: updatedSession.is_active,
+      });
+    } catch (err) {
+      logger.error(LogCategory.SESSION, 'Failed to refresh session', err as Error);
+      // If session no longer exists, clear it
+      if ((err as any)?.response?.status === 404) {
+        setSession(null);
+        localStorage.removeItem('current_session');
+        logger.info(LogCategory.SESSION, 'Session not found on backend, cleared local session');
+      }
+    }
+  }, []);
+
   const startSession = useCallback(
-    async (childName: string, childAge: number, parentId: string) => {
+    async (childName: string, childAge: number, parentId: string, childGender?: 'boy' | 'girl' | null) => {
+      logger.info(LogCategory.SESSION, 'Attempting to start session', {
+        childName,
+        childAge,
+        parentId,
+        childGender,
+      });
+
       try {
         setLoading(true);
         setError(null);
 
-        const newSession = await api.session.start(childName, childAge, parentId);
+        const newSession = await api.session.start(childName, childAge, parentId, childGender);
         setSession(newSession);
 
         // Store session in localStorage for persistence
         localStorage.setItem('current_session', JSON.stringify(newSession));
+        logger.debug(LogCategory.SESSION, 'Session stored in localStorage');
 
-        console.log('Session started:', newSession.session_id);
+        logger.session.start(newSession.session_id, childName, childAge);
       } catch (err) {
-        console.error('Failed to start session:', err);
+        logger.session.error('Failed to start session', err as Error);
         const errorMessage = err instanceof Error ? err.message : 'Failed to start session';
         setError(errorMessage);
         throw err;
@@ -43,7 +75,12 @@ export const SessionProvider: React.FC<SessionProviderProps> = ({ children }) =>
   );
 
   const endSession = useCallback(async () => {
-    if (!session) return;
+    if (!session) {
+      logger.warn(LogCategory.SESSION, 'Attempted to end session but no active session');
+      return;
+    }
+
+    logger.info(LogCategory.SESSION, `Ending session: ${session.session_id}`);
 
     try {
       setLoading(true);
@@ -52,10 +89,11 @@ export const SessionProvider: React.FC<SessionProviderProps> = ({ children }) =>
 
       // Remove from localStorage
       localStorage.removeItem('current_session');
+      logger.debug(LogCategory.SESSION, 'Session removed from localStorage');
 
-      console.log('Session ended');
+      logger.session.end(session.session_id);
     } catch (err) {
-      console.error('Failed to end session:', err);
+      logger.session.error('Failed to end session', err as Error);
       const errorMessage = err instanceof Error ? err.message : 'Failed to end session';
       setError(errorMessage);
     } finally {
@@ -63,20 +101,29 @@ export const SessionProvider: React.FC<SessionProviderProps> = ({ children }) =>
     }
   }, [session]);
 
-  // Try to restore session from localStorage on mount
+  // Clear any saved session on mount to prevent auto-login
   React.useEffect(() => {
-    const savedSession = localStorage.getItem('current_session');
-    if (savedSession) {
-      try {
-        const parsedSession = JSON.parse(savedSession);
-        setSession(parsedSession);
-        console.log('Session restored from storage');
-      } catch (err) {
-        console.error('Failed to restore session:', err);
-        localStorage.removeItem('current_session');
-      }
-    }
+    logger.debug(LogCategory.SESSION, 'Clearing any saved session from localStorage');
+    localStorage.removeItem('current_session');
+    logger.info(LogCategory.SESSION, 'Session auto-restore disabled - users must select child each time');
   }, []);
+
+  // Auto-refresh active session every 30 seconds
+  React.useEffect(() => {
+    if (!session?.session_id || !session?.is_active) {
+      return;
+    }
+
+    logger.debug(LogCategory.SESSION, 'Starting auto-refresh for active session');
+    const intervalId = setInterval(() => {
+      refreshSession(session.session_id);
+    }, 30000); // 30 seconds
+
+    return () => {
+      logger.debug(LogCategory.SESSION, 'Stopping auto-refresh');
+      clearInterval(intervalId);
+    };
+  }, [session?.session_id, session?.is_active, refreshSession]);
 
   const value: SessionContextType = {
     session,

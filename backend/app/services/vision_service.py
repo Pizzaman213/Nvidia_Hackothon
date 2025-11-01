@@ -5,6 +5,9 @@ import base64
 from typing import Dict, Any
 from app.config import settings
 from app.utils.prompts import get_image_analysis_prompt
+from app.utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class VisionService:
@@ -47,6 +50,9 @@ class VisionService:
         else:
             full_prompt = base_prompt
 
+        # Track which providers were attempted and why they failed
+        error_log = []
+
         # Try NVIDIA Cosmos Vision first if enabled and API key available
         if self.nvidia_cosmos_enabled and self.nvidia_api_key:
             result = await self._analyze_with_nvidia_cosmos(image_data, full_prompt)
@@ -57,9 +63,15 @@ class VisionService:
                     "context": context,
                     "provider": "nvidia_cosmos"
                 }
+            else:
+                error_log.append(f"NVIDIA Cosmos (model: {self.nvidia_cosmos_model}) failed - check logs for details")
+        elif self.nvidia_cosmos_enabled:
+            error_log.append("NVIDIA Cosmos enabled but NVIDIA_API_KEY not configured")
+        else:
+            error_log.append("NVIDIA Cosmos disabled in config")
 
         # Try OpenAI GPT-4 Vision if available
-        if self.openai_key:
+        if self.openai_key and self.openai_key != "test_key_for_docker_testing":
             result = await self._analyze_with_openai(image_data, full_prompt)
             if result:
                 return {
@@ -68,9 +80,15 @@ class VisionService:
                     "context": context,
                     "provider": "openai"
                 }
+            else:
+                error_log.append("OpenAI GPT-4 Vision failed - check API key and quota")
+        elif self.openai_key == "test_key_for_docker_testing":
+            error_log.append("OpenAI configured with test key (not a real API key)")
+        else:
+            error_log.append("OpenAI API key not configured")
 
         # Fallback to Anthropic Claude if available
-        if self.anthropic_key:
+        if self.anthropic_key and not self.anthropic_key.startswith("your_"):
             result = await self._analyze_with_anthropic(image_data, full_prompt)
             if result:
                 return {
@@ -79,13 +97,22 @@ class VisionService:
                     "context": context,
                     "provider": "anthropic"
                 }
+            else:
+                error_log.append("Anthropic Claude Vision failed - check API key")
+        else:
+            error_log.append("Anthropic API key not configured")
 
-        # If no vision API is available, return basic response
+        # If no vision API is available, return detailed error
+        error_message = "\n".join([f"  - {err}" for err in error_log])
+        logger.error(f"No working vision API available. Attempted providers:\n{error_message}")
+
         return {
             "success": False,
-            "analysis": "Image analysis is not currently available. Please configure NVIDIA, OpenAI, or Anthropic API keys.",
+            "analysis": None,
             "context": context,
-            "provider": "none"
+            "provider": "none",
+            "error": "Vision analysis unavailable. Please configure at least one vision API (NVIDIA Cosmos, OpenAI GPT-4V, or Anthropic Claude).",
+            "error_details": error_log
         }
 
     async def _analyze_with_nvidia_cosmos(self, image_data: bytes, prompt: str) -> str | None:
@@ -275,6 +302,15 @@ class VisionService:
         # Extract objects from analysis
         analysis_text = result.get("analysis", "")
 
+        # Check if result already has detected_objects (from mock or API)
+        detected_objects = result.get("detected_objects")
+        if detected_objects:
+            return {
+                "objects": detected_objects,
+                "description": analysis_text
+            }
+
+        # Otherwise, extract from text
         return {
             "objects": self._extract_objects(analysis_text),
             "description": analysis_text
@@ -350,10 +386,44 @@ class VisionService:
             # Check if line looks like a list item
             if line.strip().startswith("-") or line.strip().startswith("•"):
                 obj = line.strip().lstrip("-•").strip()
+                # Clean up the object name - remove numbers, extra punctuation
+                obj = obj.split(":")[0].strip()  # Remove descriptions after colon
                 if obj and len(obj) < 50:  # Reasonable object name length
                     objects.append(obj)
+            # Also try to extract from comma-separated lists
+            elif "," in line and not line.strip().startswith(("I can see", "The image", "This picture")):
+                items = [item.strip() for item in line.split(",")]
+                for item in items:
+                    if item and len(item) < 50 and not any(skip in item.lower() for skip in ["image", "picture", "see"]):
+                        objects.append(item)
 
-        return objects[:20]  # Limit to 20 objects
+        # If we didn't find any objects in lists, try to find common nouns
+        if not objects:
+            # Fallback: look for common objects mentioned in the text
+            common_objects = [
+                'ball', 'book', 'toy', 'car', 'doll', 'cup', 'phone', 'chair', 'table',
+                'lamp', 'picture', 'plant', 'window', 'door', 'pillow', 'blanket',
+                'stuffed animal', 'pencil', 'paper', 'bottle', 'shoe', 'bag', 'clock',
+                'remote', 'controller', 'teddy bear', 'robot', 'dinosaur', 'truck',
+                'computer', 'keyboard', 'mouse', 'monitor', 'desk', 'shelf', 'box',
+                'couch', 'rug', 'curtain', 'light', 'fan', 'backpack', 'notebook'
+            ]
+
+            analysis_lower = analysis.lower()
+            for obj in common_objects:
+                if obj in analysis_lower and obj not in objects:
+                    objects.append(obj)
+
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_objects = []
+        for obj in objects:
+            obj_lower = obj.lower()
+            if obj_lower not in seen:
+                seen.add(obj_lower)
+                unique_objects.append(obj)
+
+        return unique_objects[:20]  # Limit to 20 objects
 
 
 # Global vision service instance

@@ -6,13 +6,13 @@ python-dotenv==1.0.0
 websockets==12.0
 
 # Database
-sqlalchemy==2.0.23
+sqlalchemy>=2.0.35  # Updated for Python 3.13 compatibility
 aiosqlite==0.19.0
 # databases removed due to SQLAlchemy 2.x incompatibility
 
 # Data Models
-pydantic==2.5.0
-pydantic-settings==2.1.0
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
 
 # LLM Integration
 openai>=1.3.7
@@ -26,12 +26,20 @@ pillow>=10.1.0
 opencv-python>=4.8.1.78
 transformers>=4.35.2
 torch>=2.1.0
+numpy>=2.0.0,<2.3.0  # Compatible with opencv-python and chromadb
 
 # Voice Processing
 openai-whisper>=20231117
 # TTS==0.20.3  # Temporarily disabled due to dependency conflicts
 elevenlabs>=0.2.24
 gtts>=2.3.0  # Fallback TTS option
+
+# Phone Services (Emergency Calling)
+twilio>=8.10.0
+
+# NVIDIA Riva Client (for local TTS server)
+nvidia-riva-client>=2.14.0
+grpcio>=1.51.0
 
 # Task Queue
 redis==5.0.1
@@ -41,7 +49,16 @@ celery==5.3.4
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 
+# RAG and Vector Database
+chromadb>=0.5.20  # Updated for NumPy 2.x compatibility
+sentence-transformers>=2.3.1
+langchain-community>=0.0.13
+tiktoken>=0.5.2
+pypdf>=4.0.0
+beautifulsoup4>=4.12.0
+html2text>=2020.1.16
+
 # Testing
 pytest==7.4.3
 pytest-asyncio==0.21.1
-httpx==0.25.2
+httpx>=0.25.2  # Updated for compatibility

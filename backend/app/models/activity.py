@@ -31,6 +31,7 @@ class ActivityDB(Base):
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(String, index=True, nullable=False)
     activity_type = Column(String, nullable=False)
+    description = Column(String, nullable=True)
     start_time = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
     end_time = Column(DateTime, nullable=True)
     details = Column(JSON, nullable=True)
@@ -42,6 +43,7 @@ class ActivityCreate(BaseModel):
     """Request model for creating an activity"""
     session_id: str
     activity_type: ActivityType
+    description: Optional[str] = None
     details: Optional[Dict[str, Any]] = None
 
 
@@ -50,6 +52,7 @@ class ActivityResponse(BaseModel):
     id: int
     session_id: str
     activity_type: str
+    description: Optional[str] = None
     start_time: datetime
     end_time: Optional[datetime] = None
     details: Optional[Dict[str, Any]] = None

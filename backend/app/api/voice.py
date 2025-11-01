@@ -5,6 +5,9 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 
 from app.services.voice_service import voice_service
+from app.utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 router = APIRouter(prefix="/api/voice", tags=["voice"])
 

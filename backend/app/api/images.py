@@ -1,7 +1,7 @@
 """
 Image Analysis API Endpoints
 """
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional, List
@@ -16,8 +16,30 @@ from app.services.llm_service import llm_service
 from app.services.safety_service import safety_service
 from app.services.notification_service import notification_service
 from app.models.alert import AlertLevel, SafetyAlert
+from app.utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 router = APIRouter(prefix="/api/images", tags=["images"])
+
+
+def extract_thinking(text: str) -> tuple[str, Optional[str]]:
+    """
+    Extract <think> tags from LLM response.
+    Returns (visible_response, thinking_content)
+    """
+    if "<think>" in text and "</think>" in text:
+        # Split on </think> to separate thinking from response
+        parts = text.split("</think>", 1)
+        thinking_part = parts[0]
+        response_part = parts[1].strip() if len(parts) > 1 else ""
+
+        # Extract thinking content (remove <think> tag)
+        thinking_content = thinking_part.replace("<think>", "").strip()
+
+        return response_part, thinking_content
+
+    return text, None
 
 
 class ImageAnalysisRequest(BaseModel):
@@ -38,16 +60,18 @@ class ImageAnalysisResponse(BaseModel):
 
 @router.post("/analyze", response_model=ImageAnalysisResponse)
 async def analyze_image(
-    session_id: str,
-    context: str,
-    child_age: int,
-    prompt: str = "",
     image: UploadFile = File(...),
+    session_id: str = Form(...),
+    context: str = Form(...),
+    child_age: int = Form(...),
+    prompt: str = Form(""),
     db: Session = Depends(get_db)
 ):
     """
     Analyze uploaded image (homework, game, safety check, show and tell)
     """
+    logger.info(f"Image analysis request - context: {context}, session: {session_id}")
+
     # Verify session exists
     session = db.query(SessionDB).filter(SessionDB.session_id == session_id).first()
     if not session:
@@ -107,24 +131,43 @@ async def analyze_image(
     )
 
     if not analysis_result.get("success"):
+        error_msg = analysis_result.get("error", "Image analysis service unavailable")
+        error_details = analysis_result.get("error_details", [])
+
+        # Create detailed error message
+        detail_msg = error_msg
+        if error_details:
+            detail_msg += "\n\nDetails:\n" + "\n".join(error_details)
+
         raise HTTPException(
             status_code=503,
-            detail="Image analysis service unavailable. Please configure vision API."
+            detail=detail_msg
         )
 
     analysis_text = analysis_result.get("analysis", "")
 
     # Generate child-friendly response based on context
     if context == "homework":
-        ai_response = await llm_service.help_with_homework(
+        raw_response = await llm_service.help_with_homework(
             prompt or "Help me understand this problem",
             child_age,
             analysis_text
         )
+        # Extract thinking tags to hide reasoning from child
+        ai_response, _ = extract_thinking(raw_response)
     elif context == "game":
-        objects = await vision_service.identify_objects(image_bytes)
-        ai_response = f"I can see lots of fun things! {analysis_text}"
-        analysis_result["detected_objects"] = objects.get("objects", [])
+        # Use identify_objects to get structured object list
+        objects_result = await vision_service.identify_objects(image_bytes)
+        detected_objects = objects_result.get("objects", [])
+
+        # Update analysis_result with detected objects
+        analysis_result["detected_objects"] = detected_objects
+
+        # Create child-friendly response
+        if detected_objects:
+            ai_response = f"Wow! I can see {len(detected_objects)} fun things in your picture! Let's play I Spy!"
+        else:
+            ai_response = "I can see your picture! Let's try taking a photo of something with more things in it."
     elif context == "safety_check":
         safety_result = await vision_service.safety_check_image(image_bytes)
         if not safety_result["is_safe"]:
@@ -143,12 +186,14 @@ async def analyze_image(
         else:
             ai_response = "Everything looks good! What would you like to do next?"
     else:  # show_tell
-        ai_response = await llm_service.generate(
+        raw_response = await llm_service.generate(
             message=f"The child is showing me: {analysis_text}. {prompt}",
             context="The child wants to show me something",
             child_age=child_age,
             temperature=0.8
         )
+        # Extract thinking tags to hide reasoning from child
+        ai_response, _ = extract_thinking(raw_response)
 
     # Log message
     message = MessageDB(
@@ -175,9 +220,16 @@ async def analyze_image(
         )
     else:
         # Create new activity
+        context_descriptions = {
+            "homework": "Getting homework help",
+            "game": "Playing I Spy game",
+            "safety_check": "Safety check",
+            "show_tell": "Show and tell"
+        }
         activity = ActivityDB(
             session_id=session_id,
             activity_type="image_analysis",
+            description=context_descriptions.get(context, f"Image analysis: {context}"),
             start_time=datetime.now(timezone.utc),
             details={"context": context},
             images_used=1
@@ -196,10 +248,10 @@ async def analyze_image(
 
 @router.post("/homework-help")
 async def homework_help(
-    session_id: str,
-    child_age: int,
-    question: str = "",
     image: UploadFile = File(...),
+    session_id: str = Form(...),
+    child_age: int = Form(...),
+    question: str = Form(""),
     db: Session = Depends(get_db)
 ):
     """

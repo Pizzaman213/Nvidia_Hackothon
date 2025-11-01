@@ -12,7 +12,12 @@ from app.database.db import get_db
 from app.models.session import SessionDB
 from app.models.message import MessageDB
 from app.models.alert import SafetyAlertDB
+from app.models.parent_conversation import ParentConversationDB
 from app.services.llm_service import llm_service
+from app.utils.logger import setup_logger
+import json
+
+logger = setup_logger(__name__)
 
 router = APIRouter(prefix="/api/parent-assistant", tags=["parent-assistant"])
 
@@ -38,90 +43,119 @@ async def get_parenting_advice(
     db: Session = Depends(get_db)
 ):
     """
-    Get AI-powered parenting advice based on child's conversation history
+    Get AI-powered parenting advice with conversational context
 
-    This endpoint analyzes the child's previous conversations and provides
-    context-aware parenting advice to help parents better support their child.
+    This endpoint maintains a conversation history between the parent and AI assistant,
+    providing context-aware parenting advice. It does NOT access the child's conversations
+    for privacy reasons.
     """
-    # Verify session exists
-    session = db.query(SessionDB).filter(
-        SessionDB.session_id == request.session_id
-    ).first()
+    # Check if this is a general advice request (no session)
+    is_general_advice = request.session_id == "general-advice" or not request.session_id
 
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+    # Verify session exists (unless it's general advice)
+    session = None
+    if not is_general_advice:
+        session = db.query(SessionDB).filter(
+            SessionDB.session_id == request.session_id
+        ).first()
 
-    # Extract scalar values from ORM object
-    child_age_value = session.child_age
-    child_name_value = session.child_name
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
 
-    # Get conversation history
-    messages = []
-    conversation_context = ""
+    # Get child's conversation history with the AI
+    child_conversation_context = ""
+    child_name = "your child"
+    child_age = 8
 
-    if request.include_conversation_history:
-        # Get all messages from this session
-        db_messages = db.query(MessageDB).filter(
+    if session:
+        child_name = session.child_name
+        child_age = session.child_age
+
+        # Get child-AI messages from this session (last 50 messages)
+        child_messages = db.query(MessageDB).filter(
             MessageDB.session_id == request.session_id
-        ).order_by(MessageDB.timestamp.asc()).all()
+        ).order_by(MessageDB.timestamp.desc()).limit(50).all()
 
-        # Format conversation history
-        conversation_parts = []
-        for msg in db_messages:
-            speaker = "Child" if msg.role == "child" else "AI Assistant"  # type: ignore
-            emotion_note = f" [feeling: {msg.emotion}]" if msg.emotion is not None else ""
-            conversation_parts.append(
-                f"{speaker}{emotion_note}: {msg.content}"
-            )
+        if child_messages:
+            conversation_parts = []
+            for msg in reversed(child_messages):  # Reverse to get chronological order
+                speaker = child_name if msg.role == "child" else "AI"
+                emotion_tag = f" [{msg.emotion}]" if msg.emotion else ""
+                conversation_parts.append(f"{speaker}{emotion_tag}: {msg.content}")
 
-        conversation_context = "\n".join(conversation_parts)
+            child_conversation_context = "\n".join(conversation_parts)
+
+    # Get parent's conversation history (parent-assistant conversations only)
+    parent_conversation_context = ""
+
+    if request.include_conversation_history and session:
+        # Get previous parent-assistant conversations for this session
+        parent_messages = db.query(ParentConversationDB).filter(
+            ParentConversationDB.session_id == request.session_id,
+            ParentConversationDB.parent_id == session.parent_id
+        ).order_by(ParentConversationDB.timestamp.asc()).all()
+
+        # Format conversation history (only parent-assistant exchanges)
+        if parent_messages:
+            conversation_parts = []
+            for msg in parent_messages:
+                speaker = "Parent" if msg.role == "parent" else "AI Assistant"
+                conversation_parts.append(f"{speaker}: {msg.content}")
+
+            parent_conversation_context = "\n".join(conversation_parts)
 
     # Get safety alerts for context
-    alerts = db.query(SafetyAlertDB).filter(
-        SafetyAlertDB.session_id == request.session_id
-    ).all()
-
     alert_context = ""
-    if alerts:
-        alert_parts = []
-        for alert in alerts:
-            alert_parts.append(
-                f"- {alert.alert_level.upper()}: {alert.message} ({alert.ai_assessment})"
-            )
-        alert_context = "\n".join(alert_parts)
+    if session:
+        alerts = db.query(SafetyAlertDB).filter(
+            SafetyAlertDB.session_id == request.session_id
+        ).all()
+
+        if alerts:
+            alert_parts = []
+            for alert in alerts:
+                alert_parts.append(
+                    f"- {alert.alert_level.upper()}: {alert.message} ({alert.ai_assessment})"
+                )
+            alert_context = "\n".join(alert_parts)
 
     # Build comprehensive prompt for the LLM
-    system_prompt = f"""You are an expert child psychologist and parenting advisor.
-You have access to a child's conversation history with an AI assistant and any safety alerts.
+    system_prompt = f"""You are an expert child psychologist and parenting advisor having a conversation with a parent.
 
 Child Information:
-- Name: {session.child_name}
-- Age: {session.child_age} years old
+- Name: {child_name}
+- Age: {child_age} years old
 
 Your role is to:
-1. Analyze the conversation history to understand the child's emotional state, interests, and concerns
-2. Provide thoughtful, evidence-based parenting advice
-3. Suggest specific, actionable steps the parent can take
-4. Highlight any patterns or concerns that need attention
-5. Be empathetic, supportive, and practical
+1. Have a natural, ongoing conversation with the parent about parenting topics
+2. Remember and reference previous parts of your conversation with the parent
+3. Analyze the child's conversations with the AI to provide informed advice
+4. Provide thoughtful, evidence-based parenting advice
+5. Suggest specific, actionable steps the parent can take
+6. Be empathetic, supportive, and practical
 
-Format your response as follows:
-1. A brief summary of what you observed in the conversations
-2. Key insights about the child's emotional state and needs
-3. Specific advice addressing the parent's question
-4. Concrete suggested actions the parent can take
+You have access to:
+- The child's recent conversations with the AI assistant (including detected emotions)
+- Your previous conversations with THIS parent
+- Safety alerts that were flagged
+- Basic child information (name, age)
 
-Be warm, supportive, and focus on strengthening the parent-child relationship."""
+Use all this context to provide personalized, informed advice. Reference specific things the child said when relevant.
+Be warm, supportive, and maintain conversational continuity by referencing earlier parts of your discussion with the parent."""
 
-    # Build the query
-    query_parts = [
-        f"Parent's Question: {request.parent_question}",
-        "",
-    ]
+    # Build the query with conversation history
+    query_parts = []
 
-    if conversation_context:
-        query_parts.append("=== Conversation History ===")
-        query_parts.append(conversation_context)
+    # Include child's conversation context
+    if child_conversation_context:
+        query_parts.append(f"=== {child_name}'s Recent Conversations with AI ===")
+        query_parts.append(child_conversation_context)
+        query_parts.append("")
+
+    # Include parent-assistant conversation history
+    if parent_conversation_context:
+        query_parts.append("=== Your Previous Conversation with AI Assistant ===")
+        query_parts.append(parent_conversation_context)
         query_parts.append("")
 
     if alert_context:
@@ -129,22 +163,33 @@ Be warm, supportive, and focus on strengthening the parent-child relationship.""
         query_parts.append(alert_context)
         query_parts.append("")
 
-    query_parts.append("Please provide your parenting advice based on the above information.")
+    query_parts.append(f"Parent: {request.parent_question}")
 
     full_query = "\n".join(query_parts)
+
+    # Save parent's question to conversation history (only if we have a real session)
+    if session:
+        parent_message = ParentConversationDB(
+            session_id=request.session_id,
+            parent_id=session.parent_id,
+            role="parent",
+            content=request.parent_question
+        )
+        db.add(parent_message)
+        db.commit()
 
     # Get advice from LLM
     advice = await llm_service.generate(
         message=full_query,
-        child_age=getattr(session, 'child_age', 8),
+        child_age=child_age,
         temperature=0.7,
         system_prompt=system_prompt
     )
 
     # Extract insights and suggestions using a follow-up call
-    analysis_prompt = f"""Based on the conversation history, provide:
-1. A one-sentence summary of the child's overall emotional state
-2. 3 key insights about the child (as a JSON array)
+    analysis_prompt = f"""Based on this parenting conversation, provide:
+1. A one-sentence summary of the main topic discussed
+2. 3 key insights from the advice given (as a JSON array)
 3. 3 specific suggested actions for the parent (as a JSON array)
 
 Respond ONLY with valid JSON in this format:
@@ -154,25 +199,38 @@ Respond ONLY with valid JSON in this format:
     "actions": ["action 1", "action 2", "action 3"]
 }}
 
-Conversation context:
-{conversation_context[:1000] if conversation_context else "No conversation history available"}"""
+Recent advice provided:
+{advice[:1000]}"""
 
     try:
         analysis_response = await llm_service.generate(
             message=analysis_prompt,
-            child_age=getattr(session, 'child_age', 8),
+            child_age=child_age,
             temperature=0.3,
             system_prompt="You are a data extraction system. Respond only with valid JSON."
         )
 
         # Parse JSON response
-        import json
         if "```json" in analysis_response:
             analysis_response = analysis_response.split("```json")[1].split("```")[0].strip()
         elif "```" in analysis_response:
             analysis_response = analysis_response.split("```")[1].split("```")[0].strip()
 
         analysis_data = json.loads(analysis_response)
+
+        # Save assistant's response to conversation history (only if we have a real session)
+        if session:
+            assistant_message = ParentConversationDB(
+                session_id=request.session_id,
+                parent_id=session.parent_id,
+                role="assistant",
+                content=advice,
+                conversation_summary=analysis_data.get("summary"),
+                key_insights=json.dumps(analysis_data.get("insights", [])),
+                suggested_actions=json.dumps(analysis_data.get("actions", []))
+            )
+            db.add(assistant_message)
+            db.commit()
 
         return ParentAssistantResponse(
             advice=advice,
@@ -182,7 +240,19 @@ Conversation context:
         )
 
     except Exception as e:
-        print(f"Error extracting insights: {e}")
+        logger.error(f"Error extracting insights: {e}")
+
+        # Save assistant's response even if structured extraction fails (only if we have a real session)
+        if session:
+            assistant_message = ParentConversationDB(
+                session_id=request.session_id,
+                parent_id=session.parent_id,
+                role="assistant",
+                content=advice
+            )
+            db.add(assistant_message)
+            db.commit()
+
         # Return just the advice if structured extraction fails
         return ParentAssistantResponse(
             advice=advice,
@@ -190,6 +260,59 @@ Conversation context:
             key_insights=[],
             suggested_actions=[]
         )
+
+
+@router.get("/conversation-history/{session_id}")
+async def get_conversation_history(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get the parent's conversation history with the AI assistant
+    """
+    # Verify session exists
+    session = db.query(SessionDB).filter(
+        SessionDB.session_id == session_id
+    ).first()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Get parent's conversation messages
+    messages = db.query(ParentConversationDB).filter(
+        ParentConversationDB.session_id == session_id,
+        ParentConversationDB.parent_id == session.parent_id
+    ).order_by(ParentConversationDB.timestamp.asc()).all()
+
+    # Format for frontend
+    formatted_messages = []
+    for msg in messages:
+        message_data = {
+            "id": str(msg.id),
+            "role": msg.role,
+            "content": msg.content,
+            "timestamp": msg.timestamp.isoformat(),
+        }
+
+        # Add structured response data for assistant messages
+        if msg.role == "assistant":
+            try:
+                message_data["response"] = {
+                    "advice": msg.content,
+                    "conversation_summary": msg.conversation_summary,
+                    "key_insights": json.loads(msg.key_insights) if msg.key_insights else [],
+                    "suggested_actions": json.loads(msg.suggested_actions) if msg.suggested_actions else []
+                }
+            except:
+                message_data["response"] = None
+
+        formatted_messages.append(message_data)
+
+    return {
+        "session_id": session_id,
+        "messages": formatted_messages,
+        "total_messages": len(formatted_messages)
+    }
 
 
 @router.get("/conversation-summary/{session_id}")

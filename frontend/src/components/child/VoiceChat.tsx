@@ -81,9 +81,9 @@ export const VoiceChat: React.FC<VoiceChatProps> = ({
           onCameraRequired();
         }
 
-        // Check for safety flags
-        if (response.safety_flag) {
-          console.warn('Safety flag raised for message:', messageText);
+        // Check for safety concerns
+        if (response.safety_status && !['none', 'low'].includes(response.safety_status)) {
+          console.warn('Safety concern detected:', response.safety_status, 'for message:', messageText);
         }
       } catch (err) {
         console.error('Failed to send message:', err);
@@ -115,7 +115,7 @@ export const VoiceChat: React.FC<VoiceChatProps> = ({
   const handleStartListening = () => {
     setHasSpoken(false);
     startListening();
-    setTimeout(() => setHasSpoken(true), 500); // Small delay to avoid immediate trigger
+    setTimeout(() => setHasSpoken(true), 200); // Reduced delay for faster response
   };
 
   const handleStopListening = () => {
@@ -141,7 +141,19 @@ export const VoiceChat: React.FC<VoiceChatProps> = ({
       {/* Error Display */}
       {(error || voiceError) && (
         <div className="mx-4 mb-2 bg-red-100 border-2 border-red-400 rounded-lg p-3 text-center">
-          <p className="text-red-700 font-child">{error || voiceError}</p>
+          <p className="text-red-700 font-child font-semibold">{error || voiceError}</p>
+          {voiceError && (
+            <div className="mt-2 text-sm text-red-600">
+              <p className="font-semibold">Troubleshooting tips:</p>
+              <ul className="text-left list-disc list-inside mt-1">
+                <li>Make sure you're using Chrome or Edge browser</li>
+                <li>Check that your microphone is not muted</li>
+                <li>Click "Allow" when asked for microphone permission</li>
+                <li>Close other apps that might be using your microphone (Zoom, Teams, etc.)</li>
+                <li>If you stopped talking 3 times in a row, wait 60 seconds before trying again</li>
+              </ul>
+            </div>
+          )}
         </div>
       )}
 
@@ -209,9 +221,16 @@ export const VoiceChat: React.FC<VoiceChatProps> = ({
 
         {/* Help Text */}
         {!isListening && !isSpeaking && !isProcessing && (
-          <p className="text-center text-sm text-gray-500 mt-4 font-child">
-            Press the microphone and start talking
-          </p>
+          <div className="mt-4 text-center">
+            <p className="text-sm text-gray-500 font-child">
+              Press the microphone and start talking
+            </p>
+            {!voiceError && (
+              <p className="text-xs text-gray-400 mt-1">
+                Works best with Chrome or Edge browser
+              </p>
+            )}
+          </div>
         )}
       </div>
     </div>

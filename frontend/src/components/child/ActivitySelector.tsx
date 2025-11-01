@@ -4,6 +4,7 @@
 
 import React from 'react';
 import { ActivityType, ActivityCard } from '../../types';
+import { useSession } from '../../contexts/SessionContext';
 
 interface ActivitySelectorProps {
   onSelectActivity: (type: ActivityType) => void;
@@ -49,6 +50,46 @@ export const ActivitySelector: React.FC<ActivitySelectorProps> = ({
   onSelectActivity,
   currentActivity,
 }) => {
+  const { session } = useSession();
+  const isTeen = (session?.child_age ?? 0) >= 10;
+
+  // Teen UI (10+) - Modern horizontal tab layout
+  if (isTeen) {
+    return (
+      <div className="flex gap-2 p-4 overflow-x-auto">
+        {activityCards.map((activity) => (
+          <button
+            key={activity.type}
+            onClick={() => onSelectActivity(activity.type)}
+            className={`
+              group relative px-6 py-3 rounded-lg transition-all duration-200
+              flex items-center gap-3 whitespace-nowrap
+              ${
+                currentActivity === activity.type
+                  ? 'bg-white/10 border border-neon-cyan text-neon-cyan shadow-lg shadow-neon-cyan/20'
+                  : 'bg-white/5 border border-white/10 text-gray-300 hover:bg-white/10 hover:border-white/20 hover:text-white'
+              }
+            `}
+          >
+            <span className={`text-2xl transition-transform duration-200 ${currentActivity === activity.type ? 'scale-110' : 'group-hover:scale-110'}`}>
+              {activity.icon}
+            </span>
+            <div className="text-left">
+              <div className="font-geometric text-sm font-medium">{activity.title}</div>
+              {activity.requiresCamera && (
+                <div className="text-xs opacity-60 font-mono">Camera</div>
+              )}
+            </div>
+            {currentActivity === activity.type && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-neon-cyan to-neon-purple"></div>
+            )}
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  // Original child UI (under 10)
   return (
     <div className="grid grid-cols-2 gap-4 p-4">
       {activityCards.map((activity) => (

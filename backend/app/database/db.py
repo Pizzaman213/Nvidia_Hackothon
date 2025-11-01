@@ -34,9 +34,13 @@ def init_db():
     """
     Initialize database tables
     """
+    from app.models.child import ChildDB
+    from app.models.child_settings import ChildSettingsDB
     from app.models.session import SessionDB
     from app.models.message import MessageDB
     from app.models.activity import ActivityDB
     from app.models.alert import SafetyAlertDB
+    from app.models.citation import CitationDB
+    from app.models.parent_conversation import ParentConversationDB
 
     Base.metadata.create_all(bind=engine)

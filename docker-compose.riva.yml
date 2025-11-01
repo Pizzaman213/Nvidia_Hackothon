@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  riva-speech:
+    image: nvcr.io/nvidia/riva/riva-speech:2.14.0
+    runtime: nvidia
+    ports:
+      - "50051:50051"  # gRPC port for Riva services
+      - "8001:8001"    # HTTP/REST API port
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      # Enable TTS service
+      - service_enabled_tts=true
+      # Disable other services if not needed
+      - service_enabled_asr=false
+      - service_enabled_nlp=false
+      # TTS configuration
+      - tts_language_code=en-US
+      - tts_voice_name=English-US.Female-1
+      - tts_sample_rate_hz=22050
+    volumes:
+      - riva-data:/data
+      - riva-models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    command: >
+      bash -c "
+      # Download and deploy TTS models if not present
+      if [ ! -f /models/tts_deployed ]; then
+        echo 'Downloading TTS models...'
+        /opt/riva/bin/riva_init.sh
+        touch /models/tts_deployed
+      fi
+      # Start Riva server
+      /opt/riva/bin/riva_start.sh
+      "
+
+volumes:
+  riva-data:
+  riva-models:

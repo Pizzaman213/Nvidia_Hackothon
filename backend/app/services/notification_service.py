@@ -4,6 +4,9 @@ Parent Notification Service
 from typing import Dict, Set
 from fastapi import WebSocket
 from app.models.alert import SafetyAlert
+from app.utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class NotificationService:

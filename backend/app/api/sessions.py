@@ -13,6 +13,9 @@ from app.models.session import SessionDB, SessionCreate, SessionResponse
 from app.models.activity import ActivityDB, ActivityResponse
 from app.models.alert import SafetyAlertDB, AlertResponse
 from app.models.message import MessageDB, MessageResponse
+from app.utils.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
@@ -22,21 +25,51 @@ async def create_session(request: SessionCreate, db: Session = Depends(get_db)):
     """
     Create a new child session
     """
+    logger.info(f"Creating session for child: {request.child_name or request.child_id}", extra={"extra_data": {"parent_id": request.parent_id}})
+    from app.models.child import ChildDB
+
     # Generate unique session ID
     session_id = str(uuid.uuid4())
 
-    session = SessionDB(
-        session_id=session_id,
-        child_name=request.child_name,
-        child_age=request.child_age,
-        parent_id=request.parent_id,
-        start_time=datetime.now(timezone.utc),
-        is_active=True
-    )
+    # If child_id is provided, get child info from profile
+    if request.child_id:
+        child = db.query(ChildDB).filter(ChildDB.child_id == request.child_id).first()
+        if not child:
+            raise HTTPException(status_code=404, detail="Child profile not found")
+
+        session = SessionDB(
+            session_id=session_id,
+            child_id=child.child_id,
+            child_name=child.name,
+            child_age=child.age,
+            child_gender=child.gender,
+            parent_id=request.parent_id,
+            start_time=datetime.now(timezone.utc),
+            is_active=True
+        )
+    else:
+        # Backwards compatibility: create session without child profile
+        if not request.child_name or not request.child_age:
+            raise HTTPException(
+                status_code=400,
+                detail="Either child_id or both child_name and child_age must be provided"
+            )
+
+        session = SessionDB(
+            session_id=session_id,
+            child_id=None,
+            child_name=request.child_name,
+            child_age=request.child_age,
+            child_gender=request.child_gender,
+            parent_id=request.parent_id,
+            start_time=datetime.now(timezone.utc),
+            is_active=True
+        )
 
     db.add(session)
     db.commit()
     db.refresh(session)
+    logger.info(f"Session created successfully: {session_id}", extra={"extra_data": {"session_id": session_id, "child_name": session.child_name}})
 
     return SessionResponse.model_validate(session)
 
@@ -58,6 +91,7 @@ async def end_session(session_id: str, db: Session = Depends(get_db)):
     """
     End a session
     """
+    logger.info(f"Ending session: {session_id}")
     session = db.query(SessionDB).filter(SessionDB.session_id == session_id).first()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")

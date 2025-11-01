@@ -12,6 +12,11 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
+try:
+    import requests
+except ImportError:
+    requests = None  # Optional dependency for Riva health check
+
 class Color:
     """Terminal colors for pretty output"""
     HEADER = '\033[95m'
@@ -81,6 +86,13 @@ def check_requirements() -> bool:
             print_error(f"{name} is NOT installed")
             all_installed = False
 
+    # Check for NVIDIA GPU (optional, for Riva TTS)
+    try:
+        subprocess.run(['nvidia-smi'], check=True, capture_output=True)
+        print_success("NVIDIA GPU detected (Riva TTS available)")
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print_warning("NVIDIA GPU not detected (Riva TTS unavailable, will use fallback)")
+
     return all_installed
 
 def check_env_file() -> bool:
@@ -124,6 +136,240 @@ def check_env_file() -> bool:
     print_success("Environment configuration is valid")
     return True
 
+def check_riva_tts() -> bool:
+    """Check if NVIDIA Riva TTS is configured and running"""
+    riva_dir = Path.home() / 'riva'
+
+    # Check if Riva is configured
+    if not riva_dir.exists():
+        return False
+
+    config_file = riva_dir / 'config.sh'
+    if not config_file.exists():
+        return False
+
+    # Check if Riva server is running
+    if requests is None:
+        # Fallback: check if Docker container is running
+        try:
+            result = subprocess.run(
+                ['docker', 'ps', '--filter', 'name=riva-speech', '--format', '{{.Status}}'],
+                capture_output=True,
+                text=True
+            )
+            return 'Up' in result.stdout
+        except:
+            return False
+
+    try:
+        response = requests.get('http://localhost:8001/v1/health/ready', timeout=2)
+        return response.status_code == 200 and response.json().get('ready', False)
+    except:
+        return False
+
+def auto_setup_riva() -> bool:
+    """Automatically set up NVIDIA Riva TTS if not already configured"""
+    print_header("NVIDIA Riva TTS Auto-Setup")
+
+    riva_dir = Path.home() / 'riva'
+    setup_script = Path('setup_riva_local.sh')
+
+    # Check if setup script exists
+    if not setup_script.exists():
+        print_error("setup_riva_local.sh not found")
+        return False
+
+    # Run setup script
+    print_info("Running Riva setup (this creates ~/riva directory and downloads scripts)...")
+    try:
+        subprocess.run(['bash', str(setup_script)], check=True)
+        print_success("Riva setup script completed")
+    except subprocess.CalledProcessError:
+        print_error("Riva setup failed")
+        return False
+
+    # Prompt for NGC API key
+    print_info("\nTo complete Riva setup, you need an NVIDIA NGC API key")
+    print_info(f"Get your key at: {Color.CYAN}https://ngc.nvidia.com/setup/api-key{Color.END}\n")
+
+    ngc_key = input(f"{Color.YELLOW}Enter your NGC API key (or press Enter to skip): {Color.END}").strip()
+
+    if not ngc_key:
+        print_warning("Skipping NGC API key setup")
+        print_info(f"You can add it later: {Color.YELLOW}nano ~/riva/config.sh{Color.END}")
+        return False
+
+    # Update config.sh with NGC API key
+    config_file = riva_dir / 'config.sh'
+    if config_file.exists():
+        try:
+            with open(config_file, 'r') as f:
+                config_content = f.read()
+
+            # Replace placeholder with actual key
+            config_content = config_content.replace(
+                'NGC_API_KEY="YOUR_NGC_API_KEY_HERE"',
+                f'NGC_API_KEY="{ngc_key}"'
+            )
+
+            with open(config_file, 'w') as f:
+                f.write(config_content)
+
+            print_success("NGC API key configured")
+        except Exception as e:
+            print_error(f"Failed to update config: {e}")
+            return False
+
+    # Download models
+    print_info("\nDownloading Riva TTS models (~5GB, this may take 10-30 minutes)...")
+    print_warning("You can skip this now and run it later: cd ~/riva && bash riva_init.sh")
+
+    response = input(f"{Color.YELLOW}Download models now? (yes/no): {Color.END}").strip().lower()
+
+    if response == 'yes':
+        print_info("Downloading models... (this will take a while)")
+        try:
+            subprocess.run(
+                ['bash', 'riva_init.sh'],
+                cwd=riva_dir,
+                check=True
+            )
+            print_success("Riva models downloaded successfully")
+            return True
+        except subprocess.CalledProcessError:
+            print_error("Model download failed")
+            print_info(f"You can retry later: {Color.YELLOW}cd ~/riva && bash riva_init.sh{Color.END}")
+            return False
+    else:
+        print_info(f"Skipping model download")
+        print_info(f"Download later: {Color.YELLOW}cd ~/riva && bash riva_init.sh{Color.END}")
+        return False
+
+def start_riva_tts(auto_setup: bool = True) -> bool:
+    """Start NVIDIA Riva TTS server if available"""
+    print_info("Checking NVIDIA Riva TTS...")
+
+    riva_dir = Path.home() / 'riva'
+
+    # Check if Riva is set up
+    if not riva_dir.exists() or not (riva_dir / 'config.sh').exists():
+        if auto_setup:
+            print_info("NVIDIA Riva TTS not configured, starting auto-setup...")
+            if auto_setup_riva():
+                print_success("Riva auto-setup completed!")
+                # Continue to start Riva
+            else:
+                print_warning("Riva auto-setup incomplete or skipped")
+                print_info(f"Complete setup later: {Color.YELLOW}bash setup_riva_local.sh{Color.END}")
+                return False
+        else:
+            print_warning("NVIDIA Riva TTS not set up")
+            print_info(f"Run: {Color.YELLOW}bash setup_riva_local.sh{Color.END} to set up Riva")
+            return False
+
+    # Check if already running
+    if check_riva_tts():
+        print_success("NVIDIA Riva TTS already running")
+        return True
+
+    # Try to start Riva
+    print_info("Starting NVIDIA Riva TTS server...")
+    start_script = riva_dir / 'riva_start.sh'
+
+    if not start_script.exists():
+        print_warning("Riva start script not found")
+        return False
+
+    try:
+        # Start Riva in background
+        subprocess.Popen(
+            ['bash', str(start_script)],
+            cwd=riva_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+
+        # Wait for server to start (max 60 seconds)
+        print_info("Waiting for Riva TTS to start (this may take 2-3 minutes)...")
+        for i in range(60):
+            time.sleep(3)
+            if check_riva_tts():
+                print_success("NVIDIA Riva TTS server started successfully")
+                print_info(f"  • TTS gRPC: {Color.CYAN}localhost:50051{Color.END}")
+                print_info(f"  • TTS HTTP:  {Color.CYAN}http://localhost:8001{Color.END}")
+                return True
+            if i % 5 == 0:
+                print_info(f"  Still waiting... ({i*3}s)")
+
+        print_warning("Riva TTS took too long to start, continuing without it")
+        return False
+
+    except Exception as e:
+        print_warning(f"Failed to start Riva TTS: {e}")
+        return False
+
+def stop_riva_tts() -> bool:
+    """Stop NVIDIA Riva TTS server"""
+    riva_dir = Path.home() / 'riva'
+
+    if not check_riva_tts():
+        return True  # Already stopped
+
+    print_info("Stopping NVIDIA Riva TTS server...")
+    stop_script = riva_dir / 'riva_stop.sh'
+
+    if stop_script.exists():
+        try:
+            subprocess.run(['bash', str(stop_script)], cwd=riva_dir, check=True)
+            print_success("NVIDIA Riva TTS stopped")
+            return True
+        except:
+            pass
+
+    # Fallback: stop Docker container directly
+    try:
+        subprocess.run(['docker', 'stop', 'riva-speech'], check=True, capture_output=True)
+        print_success("NVIDIA Riva TTS stopped")
+        return True
+    except:
+        print_warning("Could not stop Riva TTS")
+        return False
+
+def initialize_database() -> bool:
+    """Initialize the database with all required tables"""
+    print_info("Initializing database...")
+
+    backend_path = Path('backend').resolve()
+
+    # Check if we're in the right directory
+    if not backend_path.exists():
+        print_error("Backend directory not found")
+        return False
+
+    # Find Python executable (prefer venv if available)
+    venv_python = backend_path / 'venv' / 'bin' / 'python'
+    python_exec = str(venv_python) if venv_python.exists() else sys.executable
+
+    # Initialize database using Python subprocess
+    try:
+        # Run database initialization script
+        subprocess.run(
+            [python_exec, '-c',
+             'from app.database.db import init_db; init_db(); print("Database initialized")'],
+            cwd=backend_path,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        print_success("Database initialized successfully")
+        return True
+    except subprocess.CalledProcessError as e:
+        print_error(f"Failed to initialize database: {e.stderr if e.stderr else str(e)}")
+        return False
+    except Exception as e:
+        print_error(f"Failed to initialize database: {e}")
+        return False
+
 def setup_project() -> bool:
     """Initial project setup"""
     print_header("Setting Up Project")
@@ -133,6 +379,10 @@ def setup_project() -> bool:
     for dir_path in dirs:
         Path(dir_path).mkdir(parents=True, exist_ok=True)
         print_success(f"Created directory: {dir_path}")
+
+    # Initialize database
+    if not initialize_database():
+        print_warning("Database initialization failed, but continuing...")
 
     # Install backend dependencies
     print_info("Installing backend dependencies...")
@@ -156,9 +406,14 @@ def setup_project() -> bool:
 
     return True
 
-def start_services(mode: str = 'dev', detached: bool = False) -> bool:
+def start_services(mode: str = 'dev', detached: bool = False, with_riva: bool = True, auto_setup_riva: bool = True) -> bool:
     """Start all services using Docker Compose"""
     print_header(f"Starting Services ({mode} mode)")
+
+    # Start NVIDIA Riva TTS first if available and requested
+    riva_started = False
+    if with_riva:
+        riva_started = start_riva_tts(auto_setup=auto_setup_riva)
 
     compose_files = ['-f', 'docker-compose.yml']
     if mode == 'dev':
@@ -181,6 +436,8 @@ def start_services(mode: str = 'dev', detached: bool = False) -> bool:
             print(f"  • API Docs: {Color.CYAN}http://localhost:8000/docs{Color.END}")
             if mode == 'dev':
                 print(f"  • Adminer:  {Color.CYAN}http://localhost:8080{Color.END}")
+            if riva_started:
+                print(f"  • Riva TTS: {Color.CYAN}http://localhost:8001{Color.END} (gRPC: 50051)")
             print(f"\nView logs: {Color.YELLOW}python launcher.py logs{Color.END}")
             print(f"Stop services: {Color.YELLOW}python launcher.py stop{Color.END}")
         else:
@@ -198,6 +455,9 @@ def start_services(mode: str = 'dev', detached: bool = False) -> bool:
 def stop_services() -> bool:
     """Stop all services"""
     print_header("Stopping Services")
+
+    # Stop Riva TTS if running
+    stop_riva_tts()
 
     cmd = ['docker-compose', '-f', 'docker-compose.yml', '-f', 'docker-compose.dev.yml', 'down']
 
@@ -300,15 +560,24 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python launcher.py start          # Start all services (dev mode)
-  python launcher.py start --prod   # Start in production mode
-  python launcher.py stop           # Stop all services
-  python launcher.py restart        # Restart services
-  python launcher.py logs           # Show all logs
-  python launcher.py logs backend   # Show backend logs only
-  python launcher.py status         # Show service status
-  python launcher.py test           # Run all tests
-  python launcher.py clean          # Clean project
+  python launcher.py start              # Start all services (dev mode + Riva TTS)
+  python launcher.py start --prod       # Start in production mode
+  python launcher.py start --no-riva    # Start without NVIDIA Riva TTS
+  python launcher.py stop               # Stop all services (including Riva)
+  python launcher.py restart            # Restart services
+  python launcher.py logs               # Show all logs
+  python launcher.py logs backend       # Show backend logs only
+  python launcher.py status             # Show service status
+  python launcher.py test               # Run all tests
+  python launcher.py clean              # Clean project
+
+NVIDIA Riva TTS (Auto-Setup):
+  The launcher automatically detects and sets up NVIDIA Riva TTS on first run.
+  You'll be prompted for NGC API key and model download.
+  - First run: Automatic setup wizard
+  - Subsequent runs: Automatic Riva startup
+  - Skip with: --no-riva flag
+  Provides high-quality, low-latency text-to-speech for kids.
         """
     )
 
@@ -342,6 +611,12 @@ Examples:
         help='Don\'t follow logs (for logs command)'
     )
 
+    parser.add_argument(
+        '--no-riva',
+        action='store_true',
+        help='Skip NVIDIA Riva TTS startup (for start command)'
+    )
+
     args = parser.parse_args()
 
     # Print banner
@@ -363,7 +638,8 @@ Examples:
             sys.exit(1)
         if not check_env_file():
             print_warning("Starting anyway, but some features may not work")
-        success = start_services(mode, args.detach)
+        # Auto-setup is enabled by default, can be controlled via --no-riva flag
+        success = start_services(mode, args.detach, with_riva=not args.no_riva, auto_setup_riva=not args.no_riva)
 
     elif args.command == 'stop':
         success = stop_services()
