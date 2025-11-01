@@ -16,6 +16,7 @@ import { ParentDashboard } from './pages/ParentDashboard';
 import { BabysitterDashboard } from './pages/BabysitterDashboard';
 import { CameraDebug } from './components/debug/CameraDebug';
 import { logger, LogCategory } from './utils/logger';
+import { useWindowScale } from './hooks/useWindowScale';
 
 // Component to log route changes
 function RouteLogger() {
@@ -26,6 +27,34 @@ function RouteLogger() {
   }, [location]);
 
   return null;
+}
+
+// Component to apply window-based scaling
+function ScaleWrapper({ children }: { children: React.ReactNode }) {
+  const { scale, width } = useWindowScale();
+
+  useEffect(() => {
+    // Log scale changes for debugging
+    logger.info(LogCategory.GENERAL, 'Window scale changed', {
+      scale,
+      width,
+      timestamp: new Date().toISOString(),
+    });
+  }, [scale, width]);
+
+  // Only apply scaling on larger screens (not mobile)
+  const shouldScale = width >= 768;
+
+  const style: React.CSSProperties = shouldScale
+    ? {
+        transform: `scale(${scale})`,
+        transformOrigin: 'top left',
+        width: `${100 / scale}%`,
+        minHeight: `${100 / scale}vh`,
+      }
+    : {};
+
+  return <div style={style}>{children}</div>;
 }
 
 function App() {
@@ -48,31 +77,33 @@ function App() {
           <ThemeProvider>
             <VoiceProvider>
               <RouteLogger />
-              <Routes>
-                {/* Login Page */}
-                <Route path="/" element={<Login onLogin={handleLogin} />} />
+              <ScaleWrapper>
+                <Routes>
+                  {/* Login Page */}
+                  <Route path="/" element={<Login onLogin={handleLogin} />} />
 
-                {/* Parent Login Page */}
-                <Route path="/parent-login" element={<ParentLogin onLogin={handleLogin} />} />
+                  {/* Parent Login Page */}
+                  <Route path="/parent-login" element={<ParentLogin onLogin={handleLogin} />} />
 
-                {/* Babysitter Login Page */}
-                <Route path="/babysitter-login" element={<BabysitterLogin onLogin={handleLogin} />} />
+                  {/* Babysitter Login Page */}
+                  <Route path="/babysitter-login" element={<BabysitterLogin onLogin={handleLogin} />} />
 
-                {/* Child Interface */}
-                <Route path="/child" element={<ChildInterface />} />
+                  {/* Child Interface */}
+                  <Route path="/child" element={<ChildInterface />} />
 
-                {/* Parent Dashboard */}
-                <Route path="/parent" element={<ParentDashboard />} />
+                  {/* Parent Dashboard */}
+                  <Route path="/parent" element={<ParentDashboard />} />
 
-                {/* Babysitter Dashboard */}
-                <Route path="/babysitter" element={<BabysitterDashboard />} />
+                  {/* Babysitter Dashboard */}
+                  <Route path="/babysitter" element={<BabysitterDashboard />} />
 
-                {/* Camera Debug Page */}
-                <Route path="/debug/camera" element={<CameraDebug />} />
+                  {/* Camera Debug Page */}
+                  <Route path="/debug/camera" element={<CameraDebug />} />
 
-                {/* Redirect unknown routes to login */}
-                <Route path="*" element={<Navigate to="/" replace />} />
-              </Routes>
+                  {/* Redirect unknown routes to login */}
+                  <Route path="*" element={<Navigate to="/" replace />} />
+                </Routes>
+              </ScaleWrapper>
             </VoiceProvider>
           </ThemeProvider>
         </ParentProvider>
