@@ -598,11 +598,19 @@ export const api = {
       session_id: string;
       parent_question: string;
       include_conversation_history?: boolean;
+      child_name?: string;
+      child_age?: number;
     }): Promise<{
       advice: string;
       conversation_summary: string | null;
       key_insights: string[];
       suggested_actions: string[];
+      citations: Array<{
+        source: string;
+        url: string;
+        relevance: number;
+        source_type: string;
+      }>;
     }> => {
       const response = await apiClient.post(
         '/api/parent-assistant',
@@ -626,6 +634,12 @@ export const api = {
           conversation_summary: string | null;
           key_insights: string[];
           suggested_actions: string[];
+          citations: Array<{
+            source: string;
+            url: string;
+            relevance: number;
+            source_type: string;
+          }>;
         };
       }>;
       total_messages: number;

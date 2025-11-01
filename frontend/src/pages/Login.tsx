@@ -6,7 +6,7 @@ import React from 'react';
 import { useNavigate } from 'react-router-dom';
 
 interface LoginProps {
-  onLogin: (role: 'child' | 'parent') => void;
+  onLogin: (role: 'child' | 'parent' | 'babysitter') => void;
 }
 
 export const Login: React.FC<LoginProps> = ({ onLogin }) => {
@@ -20,6 +20,11 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const handleParentLogin = () => {
     // Navigate to dedicated parent login page
     navigate('/parent-login');
+  };
+
+  const handleBabysitterLogin = () => {
+    // Navigate to dedicated babysitter login page
+    navigate('/babysitter-login');
   };
 
   return (
@@ -37,7 +42,7 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
           <p className="text-xl text-gray-600">Choose who you are</p>
         </div>
 
-        <div className="grid md:grid-cols-2 gap-6">
+        <div className="grid md:grid-cols-3 gap-6">
           {/* Child Login */}
           <button
             onClick={handleChildLogin}
@@ -63,6 +68,22 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
               <div className="text-8xl mb-4">👨</div>
               <h2 className="text-3xl font-bold text-parent-primary mb-3">
                 I'm a Parent
+              </h2>
+              <p className="text-gray-600">
+                Monitor your child's activities and safety
+              </p>
+            </div>
+          </button>
+
+          {/* Babysitter Login */}
+          <button
+            onClick={handleBabysitterLogin}
+            className="bg-white rounded-3xl shadow-2xl p-8 transform transition-all hover:scale-105 hover:shadow-3xl active:scale-95"
+          >
+            <div className="text-center">
+              <div className="text-8xl mb-4">👩‍🍼</div>
+              <h2 className="text-3xl font-bold text-parent-primary mb-3">
+                I'm a Babysitter
               </h2>
               <p className="text-gray-600">
                 Monitor your child's activities and safety

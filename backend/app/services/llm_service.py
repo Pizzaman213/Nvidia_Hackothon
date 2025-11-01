@@ -2,7 +2,8 @@
 NVIDIA Nemotron LLM Service
 """
 import json
-import requests
+import asyncio
+import httpx
 from typing import Dict, Any, List, Optional, Tuple
 from app.config import settings
 from app.utils.prompts import (
@@ -15,6 +16,9 @@ from app.utils.prompts import (
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
+
+# Global semaphore for rate limiting concurrent AI requests
+_nvidia_semaphore = asyncio.Semaphore(5)  # Max 5 concurrent NVIDIA API calls
 
 
 class NemotronLLM:
@@ -198,114 +202,129 @@ class NemotronLLM:
         logger.debug(f"Sending request to NVIDIA API: {api_url}")
         logger.debug(f"URL bytes: {api_url.encode('utf-8')}")
 
-        try:
-
-            response = requests.post(
-                api_url,
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "temperature": temperature or self.default_temperature,
-                    "max_tokens": self.max_tokens
-                },
-                timeout=30
-            )
-
-            response.raise_for_status()
-
-            # Validate response content type
-            content_type = response.headers.get("Content-Type", "")
-            if "application/json" not in content_type:
-                logger.error(f"Non-JSON response from NVIDIA API. Content-Type: {content_type}")
-                logger.debug(f"Response preview: {response.text[:200]}")
-                return "Received an unexpected response format from the AI service. Please try again."
-
-            result = response.json()
-
-            # Validate response structure
-            if "choices" not in result or not result["choices"]:
-                logger.error(f"Unexpected API response structure: {result}")
-                return "I received an unexpected response. Please try again."
-
-            if not result["choices"][0].get("message") or "content" not in result["choices"][0]["message"]:
-                logger.error(f"Missing message content in API response: {result}")
-                return "I received an incomplete response. Please try again."
-
-            generated_text = result["choices"][0]["message"]["content"]
-
-            logger.info(
-                "LLM response generated successfully",
-                extra={
-                    "extra_data": {
-                        "response_length": len(generated_text),
-                        "tokens_used": result.get("usage", {}).get("total_tokens", 0)
-                    }
-                }
-            )
-
-            return generated_text
-
-        except requests.exceptions.Timeout:
-            logger.error("NVIDIA API request timed out after 30 seconds")
-            return "I'm taking a bit too long to respond. Please try again."
-
-        except requests.exceptions.HTTPError as e:
-            # Handle specific HTTP errors
-            if e.response is not None:
-                status_code = e.response.status_code
-                if status_code == 401:
-                    logger.error("NVIDIA API key is invalid or expired")
-                    return "I'm having authentication issues. Please check if the NVIDIA API key is correct and active."
-                elif status_code == 404:
-                    logger.error(
-                        f"NVIDIA API endpoint not found. URL may be incorrect.",
-                        extra={
-                            "extra_data": {
-                                "base_url": self.base_url,
-                                "api_url": api_url,
-                                "url_bytes": api_url.encode('utf-8').hex()
-                            }
+        # Use semaphore to limit concurrent requests
+        async with _nvidia_semaphore:
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(
+                        api_url,
+                        headers={
+                            "Authorization": f"Bearer {self.api_key}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": self.model,
+                            "messages": messages,
+                            "temperature": temperature or self.default_temperature,
+                            "max_tokens": self.max_tokens
                         }
                     )
-                    return "The AI service endpoint was not found. Please check the configuration."
-                elif status_code == 429:
-                    logger.warning("NVIDIA API rate limit exceeded")
-                    return "I'm a bit busy right now. Please wait a moment and try again."
-                elif status_code == 503:
-                    logger.error("NVIDIA API service unavailable")
-                    return "The AI service is temporarily unavailable. Please try again in a moment."
 
-            logger.error(
-                f"HTTP error calling NVIDIA API: {str(e)}",
-                exc_info=True,
-                extra={
-                    "extra_data": {
-                        "error_type": type(e).__name__,
-                        "status_code": e.response.status_code if e.response else None,
-                        "model": self.model,
-                        "base_url": self.base_url
-                    }
-                }
-            )
-            return "I'm having trouble connecting right now. Please try again in a moment."
+                    response.raise_for_status()
 
-        except requests.exceptions.RequestException as e:
-            logger.error(
-                f"Error calling NVIDIA API: {str(e)}",
-                exc_info=True,
-                extra={
-                    "extra_data": {
-                        "error_type": type(e).__name__,
-                        "model": self.model,
-                        "base_url": self.base_url
+                    # Validate response content type
+                    content_type = response.headers.get("Content-Type", "")
+                    if "application/json" not in content_type:
+                        logger.error(f"Non-JSON response from NVIDIA API. Content-Type: {content_type}")
+                        logger.debug(f"Response preview: {response.text[:200]}")
+                        return "Received an unexpected response format from the AI service. Please try again."
+
+                    result = response.json()
+
+                # Validate response structure
+                if "choices" not in result or not result["choices"]:
+                    logger.error(f"Unexpected API response structure: {result}")
+                    return "I received an unexpected response. Please try again."
+
+                if not result["choices"][0].get("message") or "content" not in result["choices"][0]["message"]:
+                    logger.error(f"Missing message content in API response: {result}")
+                    return "I received an incomplete response. Please try again."
+
+                generated_text = result["choices"][0]["message"]["content"]
+
+                logger.info(
+                    "LLM response generated successfully",
+                    extra={
+                        "extra_data": {
+                            "response_length": len(generated_text),
+                            "tokens_used": result.get("usage", {}).get("total_tokens", 0)
+                        }
                     }
-                }
-            )
-            return "I'm having trouble connecting right now. Please try again in a moment."
+                )
+
+                return generated_text
+
+            except httpx.TimeoutException:
+                logger.error("NVIDIA API request timed out after 30 seconds")
+                return "I'm taking a bit too long to respond. Please try again."
+
+            except httpx.HTTPStatusError as e:
+                # Handle specific HTTP errors
+                if e.response is not None:
+                    status_code = e.response.status_code
+                    if status_code == 401:
+                        logger.error("NVIDIA API key is invalid or expired")
+                        return "I'm having authentication issues. Please check if the NVIDIA API key is correct and active."
+                    elif status_code == 404:
+                        logger.error(
+                            f"NVIDIA API endpoint not found. URL may be incorrect.",
+                            extra={
+                                "extra_data": {
+                                    "base_url": self.base_url,
+                                    "api_url": api_url,
+                                    "url_bytes": api_url.encode('utf-8').hex()
+                                }
+                            }
+                        )
+                        return "The AI service endpoint was not found. Please check the configuration."
+                    elif status_code == 429:
+                        logger.warning("NVIDIA API rate limit exceeded")
+                        return "I'm a bit busy right now. Please wait a moment and try again."
+                    elif status_code == 503:
+                        logger.error("NVIDIA API service unavailable")
+                        return "The AI service is temporarily unavailable. Please try again in a moment."
+
+                logger.error(
+                    f"HTTP error calling NVIDIA API: {str(e)}",
+                    exc_info=True,
+                    extra={
+                        "extra_data": {
+                            "error_type": type(e).__name__,
+                            "status_code": e.response.status_code if e.response else None,
+                            "model": self.model,
+                            "base_url": self.base_url
+                        }
+                    }
+                )
+                return "I'm having trouble connecting right now. Please try again in a moment."
+
+            except httpx.RequestError as e:
+                logger.error(
+                    f"Error calling NVIDIA API: {str(e)}",
+                    exc_info=True,
+                    extra={
+                        "extra_data": {
+                            "error_type": type(e).__name__,
+                            "model": self.model,
+                            "base_url": self.base_url
+                        }
+                    }
+                )
+                return "I'm having trouble connecting right now. Please try again in a moment."
+
+            except Exception as e:
+                logger.error(
+                    f"Unexpected error calling NVIDIA API: {str(e)}",
+                    exc_info=True,
+                    extra={
+                        "extra_data": {
+                            "error_type": type(e).__name__,
+                            "model": self.model,
+                            "base_url": self.base_url
+                        }
+                    }
+                )
+                return "I'm having trouble right now. Please try again in a moment."
 
     async def analyze_safety(
         self,

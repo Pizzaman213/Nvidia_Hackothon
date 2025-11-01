@@ -2,8 +2,10 @@
 // ParentAssistant - AI-powered parenting advice chat interface
 // ============================================================================
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import ReactMarkdown from 'react-markdown';
 import api from '../../services/api';
+import { useParallelAsyncData } from '../../hooks/useAsyncData';
 
 interface ParentAssistantProps {
   sessionId: string;
@@ -11,12 +13,11 @@ interface ParentAssistantProps {
   childAge: number;
 }
 
-interface ConversationSummary {
-  summary: string;
-  message_count: number;
-  emotions_detected: string[];
-  child_name: string;
-  child_age: number;
+interface Citation {
+  source: string;
+  url: string;
+  relevance: number;
+  source_type: string;
 }
 
 interface AssistantResponse {
@@ -24,6 +25,7 @@ interface AssistantResponse {
   conversation_summary: string | null;
   key_insights: string[];
   suggested_actions: string[];
+  citations: Citation[];  // Now required - backend always provides this (empty array if no citations)
 }
 
 interface ChatMessage {
@@ -32,6 +34,10 @@ interface ChatMessage {
   content: string;
   timestamp: Date;
   response?: AssistantResponse;
+  isReasoningExpanded?: boolean;
+  isThinkingExpanded?: boolean;
+  thinkingContent?: string;
+  cleanContent?: string;
 }
 
 export const ParentAssistant: React.FC<ParentAssistantProps> = ({
@@ -41,7 +47,7 @@ export const ParentAssistant: React.FC<ParentAssistantProps> = ({
 }) => {
   const [question, setQuestion] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [conversationSummary, setConversationSummary] = useState<ConversationSummary | null>(null);
+  const [showChildConversation, setShowChildConversation] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [includeHistory, setIncludeHistory] = useState(true);
@@ -59,44 +65,69 @@ export const ParentAssistant: React.FC<ParentAssistantProps> = ({
     scrollToBottom();
   }, [chatMessages]);
 
-  const loadConversationSummary = useCallback(async () => {
-    if (!sessionId) return; // Skip if no session
-    try {
-      const summary = await api.parentAssistant.getConversationSummary(sessionId);
-      setConversationSummary(summary);
-    } catch (err) {
-      console.error('Failed to load conversation summary:', err);
-    }
-  }, [sessionId]);
+  // Extract <think> tags from content
+  const extractThinkingContent = (content: string): { cleanContent: string; thinkingContent: string | null } => {
+    const thinkRegex = /<think>([\s\S]*?)<\/think>/i;
+    const match = content.match(thinkRegex);
 
-  // Load conversation history on mount
-  const loadConversationHistory = useCallback(async () => {
-    if (!sessionId) return; // Skip if no session
-    try {
+    if (match) {
+      return {
+        cleanContent: content.replace(thinkRegex, '').trim(),
+        thinkingContent: match[1].trim()
+      };
+    }
+
+    return {
+      cleanContent: content,
+      thinkingContent: null
+    };
+  };
+
+  // Load all data in parallel using custom hook - prevents race conditions
+  const asyncFunctions = useMemo(() => ({
+    conversationSummary: async () => {
+      if (!sessionId) return null;
+      return await api.parentAssistant.getConversationSummary(sessionId);
+    },
+    conversationHistory: async () => {
+      if (!sessionId) return { messages: [] };
       const history = await api.parentAssistant.getConversationHistory(sessionId);
 
       // Convert history messages to chat messages
-      const loadedMessages: ChatMessage[] = history.messages.map(msg => ({
-        id: msg.id,
-        role: msg.role,
-        content: msg.content,
-        timestamp: new Date(msg.timestamp),
-        response: msg.response,
-      }));
+      const loadedMessages: ChatMessage[] = history.messages.map(msg => {
+        const { cleanContent, thinkingContent } = extractThinkingContent(msg.content);
+        return {
+          id: msg.id,
+          role: msg.role,
+          content: msg.content,
+          cleanContent,
+          thinkingContent: thinkingContent || undefined,
+          timestamp: new Date(msg.timestamp),
+          response: msg.response,
+          isReasoningExpanded: false,
+          isThinkingExpanded: false,
+        };
+      });
 
-      setChatMessages(loadedMessages);
-    } catch (err) {
-      console.error('Failed to load conversation history:', err);
+      return { messages: loadedMessages };
+    },
+    childMessages: async () => {
+      if (!sessionId) return [];
+      return await api.session.getMessages(sessionId);
     }
-  }, [sessionId]);
+  }), [sessionId]);
 
-  // Load conversation summary and history on mount
+  const { data: assistantData } = useParallelAsyncData(
+    asyncFunctions,
+    { deps: [sessionId], autoFetch: !!sessionId }
+  );
+
+  // Update local state when data loads
   useEffect(() => {
-    if (sessionId) {
-      loadConversationSummary();
-      loadConversationHistory();
+    if (assistantData.conversationHistory?.messages) {
+      setChatMessages(assistantData.conversationHistory.messages);
     }
-  }, [sessionId, loadConversationSummary, loadConversationHistory]);
+  }, [assistantData.conversationHistory]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -125,17 +156,28 @@ export const ParentAssistant: React.FC<ParentAssistantProps> = ({
         // Use a dummy session ID to get general advice
         const result = await api.parentAssistant.getAdvice({
           session_id: 'general-advice',
-          parent_question: `I have a question about parenting my ${childAge}-year-old child named ${childName}. ${parentMessage.content}`,
+          parent_question: parentMessage.content,
           include_conversation_history: false,
+          child_name: childName,
+          child_age: childAge,
         });
 
         // Add assistant response to chat
+        const fullContent = result.advice + "\n\n💡 Note: For more personalized advice based on your child's recent conversations, have them chat with the AI assistant first!";
+        const { cleanContent, thinkingContent } = extractThinkingContent(fullContent);
         const assistantMessage: ChatMessage = {
           id: `assistant-${Date.now()}`,
           role: 'assistant',
-          content: result.advice + "\n\n💡 Note: For more personalized advice based on your child's recent conversations, have them chat with the AI assistant first!",
+          content: fullContent,
+          cleanContent,
+          thinkingContent: thinkingContent || undefined,
           timestamp: new Date(),
-          response: result,
+          response: {
+            ...result,
+            citations: result.citations || []  // Ensure citations array is always present
+          },
+          isReasoningExpanded: false,
+          isThinkingExpanded: false,
         };
 
         setChatMessages((prev) => [...prev, assistantMessage]);
@@ -145,15 +187,25 @@ export const ParentAssistant: React.FC<ParentAssistantProps> = ({
           session_id: sessionId,
           parent_question: parentMessage.content,
           include_conversation_history: includeHistory,
+          child_name: childName,
+          child_age: childAge,
         });
 
         // Add assistant response to chat
+        const { cleanContent, thinkingContent } = extractThinkingContent(result.advice);
         const assistantMessage: ChatMessage = {
           id: `assistant-${Date.now()}`,
           role: 'assistant',
           content: result.advice,
+          cleanContent,
+          thinkingContent: thinkingContent || undefined,
           timestamp: new Date(),
-          response: result,
+          response: {
+            ...result,
+            citations: result.citations || []  // Ensure citations array is always present
+          },
+          isReasoningExpanded: false,
+          isThinkingExpanded: false,
         };
 
         setChatMessages((prev) => [...prev, assistantMessage]);
@@ -178,6 +230,22 @@ export const ParentAssistant: React.FC<ParentAssistantProps> = ({
     } finally {
       setLoading(false);
     }
+  };
+
+  const toggleReasoning = (messageId: string) => {
+    setChatMessages(prev => prev.map(msg =>
+      msg.id === messageId
+        ? { ...msg, isReasoningExpanded: !msg.isReasoningExpanded }
+        : msg
+    ));
+  };
+
+  const toggleThinking = (messageId: string) => {
+    setChatMessages(prev => prev.map(msg =>
+      msg.id === messageId
+        ? { ...msg, isThinkingExpanded: !msg.isThinkingExpanded }
+        : msg
+    ));
   };
 
   const suggestedQuestions = [
@@ -217,26 +285,88 @@ export const ParentAssistant: React.FC<ParentAssistantProps> = ({
           </label>
         </div>
 
-        {/* Conversation Summary */}
-        {conversationSummary && conversationSummary.message_count > 0 && (
-          <div className="glass rounded-xl p-4 border border-neon-cyan/20">
-            <h3 className="font-semibold text-neon-cyan mb-2 flex items-center gap-2">
-              <span>📊</span>
-              <span>Conversation Overview</span>
-            </h3>
-            <p className="text-sm text-gray-300 mb-2">{conversationSummary.summary}</p>
-            <div className="flex gap-4 text-sm text-gray-400">
-              <span className="flex items-center gap-1">
-                <span className="text-neon-cyan">💬</span>
-                {conversationSummary.message_count} messages
-              </span>
-              {conversationSummary.emotions_detected.length > 0 && (
-                <span className="flex items-center gap-1">
-                  <span className="text-neon-pink">😊</span>
-                  Emotions: {conversationSummary.emotions_detected.join(', ')}
-                </span>
-              )}
+        {/* Conversation Summary - Enhanced */}
+        {assistantData.conversationSummary && assistantData.conversationSummary.message_count > 0 && (
+          <div className="glass rounded-xl p-5 border border-neon-cyan/20">
+            <div className="flex items-start justify-between mb-3">
+              <div className="flex-1">
+                <h3 className="font-semibold text-neon-cyan mb-1 flex items-center gap-2">
+                  <span>📊</span>
+                  <span>{childName}'s Conversation Summary</span>
+                </h3>
+                <p className="text-xs text-gray-400">What {childName} has been talking about with the AI</p>
+              </div>
+              <button
+                onClick={() => setShowChildConversation(!showChildConversation)}
+                className="px-3 py-1.5 text-xs bg-neon-cyan/10 hover:bg-neon-cyan/20 text-neon-cyan rounded-lg transition-all border border-neon-cyan/30 hover:border-neon-cyan/50 flex items-center gap-1"
+              >
+                <span>{showChildConversation ? '👁️‍🗨️' : '👁️'}</span>
+                <span>{showChildConversation ? 'Hide' : 'View'} Full Chat</span>
+              </button>
             </div>
+
+            {/* Summary Text */}
+            <div className="bg-white/5 rounded-lg p-3 mb-3">
+              <p className="text-sm text-gray-200 leading-relaxed">{assistantData.conversationSummary.summary}</p>
+            </div>
+
+            {/* Stats */}
+            <div className="flex flex-wrap gap-3 text-sm">
+              <div className="flex items-center gap-2 bg-neon-cyan/10 px-3 py-1.5 rounded-lg">
+                <span className="text-neon-cyan">💬</span>
+                <span className="text-gray-300">{assistantData.conversationSummary.message_count} messages</span>
+              </div>
+              {assistantData.conversationSummary.emotions_detected.length > 0 && (
+                <div className="flex items-center gap-2 bg-neon-pink/10 px-3 py-1.5 rounded-lg">
+                  <span className="text-neon-pink">😊</span>
+                  <span className="text-gray-300">Emotions: {assistantData.conversationSummary.emotions_detected.join(', ')}</span>
+                </div>
+              )}
+              <div className="flex items-center gap-2 bg-neon-purple/10 px-3 py-1.5 rounded-lg">
+                <span className="text-neon-purple">👤</span>
+                <span className="text-gray-300">{childName}, {childAge} years old</span>
+              </div>
+            </div>
+
+            {/* Full Child Conversation - Collapsible */}
+            {showChildConversation && assistantData.childMessages && assistantData.childMessages.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-white/10 animate-fade-in">
+                <h4 className="text-sm font-semibold text-neon-purple mb-3 flex items-center gap-2">
+                  <span>💬</span>
+                  <span>Full Conversation History</span>
+                </h4>
+                <div className="space-y-2 max-h-96 overflow-y-auto pr-2 custom-scrollbar">
+                  {assistantData.childMessages.map((msg: any, idx: number) => (
+                    <div
+                      key={msg.id || idx}
+                      className={`text-xs p-3 rounded-lg ${
+                        msg.role === 'child'
+                          ? 'bg-neon-purple/10 border border-neon-purple/20 ml-4'
+                          : 'bg-white/5 border border-white/10 mr-4'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-sm">
+                          {msg.role === 'child' ? '👧' : '🤖'}
+                        </span>
+                        <span className="font-semibold text-gray-300">
+                          {msg.role === 'child' ? childName : 'AI Assistant'}
+                        </span>
+                        {msg.emotion && (
+                          <span className="text-neon-pink text-xs px-2 py-0.5 bg-neon-pink/10 rounded">
+                            {msg.emotion}
+                          </span>
+                        )}
+                        <span className="text-gray-500 text-xs ml-auto">
+                          {new Date(msg.timestamp).toLocaleTimeString()}
+                        </span>
+                      </div>
+                      <p className="text-gray-300 leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -300,58 +430,181 @@ export const ParentAssistant: React.FC<ParentAssistantProps> = ({
                     </span>
                   </div>
 
-                  {/* Message Content */}
-                  <div className="whitespace-pre-wrap text-sm leading-relaxed">
-                    {message.content}
+                  {/* Message Content - Show clean content without <think> tags */}
+                  <div className="text-sm leading-relaxed prose prose-invert prose-sm max-w-none">
+                    {message.role === 'assistant' ? (
+                      <ReactMarkdown
+                        components={{
+                          // Custom styling for markdown elements
+                          // eslint-disable-next-line @typescript-eslint/no-unused-vars, jsx-a11y/heading-has-content
+                          h3: ({ node, ...props }: any) => <h3 className="text-base font-bold text-neon-cyan mt-4 mb-2" {...props} />,
+                          // eslint-disable-next-line @typescript-eslint/no-unused-vars, jsx-a11y/heading-has-content
+                          h4: ({ node, ...props }: any) => <h4 className="text-sm font-semibold text-neon-purple mt-3 mb-1" {...props} />,
+                          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                          strong: ({ node, ...props }: any) => <strong className="font-semibold text-white" {...props} />,
+                          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                          ul: ({ node, ...props }: any) => <ul className="list-disc ml-5 my-2 space-y-1" {...props} />,
+                          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                          ol: ({ node, ...props }: any) => <ol className="list-decimal ml-5 my-2 space-y-1" {...props} />,
+                          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                          li: ({ node, ...props }: any) => <li className="text-gray-200" {...props} />,
+                          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                          p: ({ node, ...props }: any) => <p className="mb-3 last:mb-0" {...props} />,
+                          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+                          code: ({ node, ...props }: any) => <code className="bg-white/10 px-1 py-0.5 rounded text-neon-cyan text-xs" {...props} />,
+                        }}
+                      >
+                        {message.cleanContent || message.content}
+                      </ReactMarkdown>
+                    ) : (
+                      <div className="whitespace-pre-wrap">{message.cleanContent || message.content}</div>
+                    )}
                   </div>
 
-                  {/* Detailed Response Sections */}
-                  {message.response && (
-                    <div className="mt-4 space-y-3">
-                      {/* Conversation Summary */}
-                      {message.response.conversation_summary && (
-                        <div className="glass rounded-lg p-3 border border-neon-cyan/20">
-                          <h4 className="font-semibold text-neon-cyan text-xs mb-1 flex items-center gap-1">
-                            <span>📝</span>
-                            <span>Observation</span>
+                  {/* Thinking Process Dropdown - Only for assistant messages with thinking content */}
+                  {message.role === 'assistant' && message.thinkingContent && (
+                    <div className="mt-4">
+                      {/* Toggle Button for Thinking */}
+                      <button
+                        onClick={() => toggleThinking(message.id)}
+                        className="flex items-center gap-2 text-xs font-semibold text-yellow-400 hover:text-yellow-300 transition-colors group w-full"
+                      >
+                        <svg
+                          className={`w-4 h-4 transition-transform duration-200 ${message.isThinkingExpanded ? 'rotate-90' : ''}`}
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                        <span className="group-hover:underline">
+                          {message.isThinkingExpanded ? 'Hide AI Thinking Process' : 'Show AI Thinking Process'}
+                        </span>
+                      </button>
+
+                      {/* Collapsible Thinking Content */}
+                      {message.isThinkingExpanded && (
+                        <div className="mt-3 glass rounded-lg p-3 border border-yellow-400/20 animate-fade-in">
+                          <h4 className="font-semibold text-yellow-400 text-xs mb-2 flex items-center gap-1">
+                            <span>🧠</span>
+                            <span>Internal Reasoning</span>
                           </h4>
-                          <p className="text-xs text-gray-300">{message.response.conversation_summary}</p>
+                          <div className="text-xs text-gray-300 whitespace-pre-wrap leading-relaxed">
+                            {message.thinkingContent}
+                          </div>
                         </div>
                       )}
+                    </div>
+                  )}
 
-                      {/* Key Insights */}
-                      {message.response.key_insights.length > 0 && (
-                        <div className="glass rounded-lg p-3 border border-neon-purple/20">
-                          <h4 className="font-semibold text-neon-purple text-xs mb-2 flex items-center gap-1">
-                            <span>🔍</span>
-                            <span>Key Insights</span>
-                          </h4>
-                          <ul className="space-y-1">
-                            {message.response.key_insights.map((insight: string, idx: number) => (
-                              <li key={idx} className="flex items-start gap-2 text-xs text-gray-300">
-                                <span className="text-neon-purple mt-0.5">•</span>
-                                <span>{insight}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
+                  {/* Detailed Response Sections - Collapsible */}
+                  {message.response && (message.response.conversation_summary || message.response.key_insights.length > 0 || message.response.suggested_actions.length > 0) && (
+                    <div className="mt-4">
+                      {/* Toggle Button */}
+                      <button
+                        onClick={() => toggleReasoning(message.id)}
+                        className="flex items-center gap-2 text-xs font-semibold text-neon-cyan hover:text-neon-purple transition-colors group w-full"
+                      >
+                        <svg
+                          className={`w-4 h-4 transition-transform duration-200 ${message.isReasoningExpanded ? 'rotate-90' : ''}`}
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                        <span className="group-hover:underline">
+                          {message.isReasoningExpanded ? 'Hide Reasoning & Insights' : 'Show Reasoning & Insights'}
+                        </span>
+                      </button>
 
-                      {/* Suggested Actions */}
-                      {message.response.suggested_actions.length > 0 && (
-                        <div className="glass rounded-lg p-3 border border-terminal-green/20">
-                          <h4 className="font-semibold text-terminal-green text-xs mb-2 flex items-center gap-1">
-                            <span>✅</span>
-                            <span>Suggested Actions</span>
-                          </h4>
-                          <ul className="space-y-1">
-                            {message.response.suggested_actions.map((action: string, idx: number) => (
-                              <li key={idx} className="flex items-start gap-2 text-xs text-gray-300">
-                                <span className="text-terminal-green font-bold">{idx + 1}.</span>
-                                <span>{action}</span>
-                              </li>
-                            ))}
-                          </ul>
+                      {/* Collapsible Content */}
+                      {message.isReasoningExpanded && (
+                        <div className="mt-3 space-y-3 animate-fade-in">
+                          {/* Conversation Summary */}
+                          {message.response.conversation_summary && (
+                            <div className="glass rounded-lg p-3 border border-neon-cyan/20">
+                              <h4 className="font-semibold text-neon-cyan text-xs mb-1 flex items-center gap-1">
+                                <span>📝</span>
+                                <span>Observation</span>
+                              </h4>
+                              <p className="text-xs text-gray-300">{message.response.conversation_summary}</p>
+                            </div>
+                          )}
+
+                          {/* Key Insights */}
+                          {message.response.key_insights.length > 0 && (
+                            <div className="glass rounded-lg p-3 border border-neon-purple/20">
+                              <h4 className="font-semibold text-neon-purple text-xs mb-2 flex items-center gap-1">
+                                <span>🔍</span>
+                                <span>Key Insights</span>
+                              </h4>
+                              <ul className="space-y-1">
+                                {message.response.key_insights.map((insight: string, idx: number) => (
+                                  <li key={idx} className="flex items-start gap-2 text-xs text-gray-300">
+                                    <span className="text-neon-purple mt-0.5">•</span>
+                                    <span>{insight}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          {/* Suggested Actions */}
+                          {message.response.suggested_actions.length > 0 && (
+                            <div className="glass rounded-lg p-3 border border-terminal-green/20">
+                              <h4 className="font-semibold text-terminal-green text-xs mb-2 flex items-center gap-1">
+                                <span>✅</span>
+                                <span>Suggested Actions</span>
+                              </h4>
+                              <ul className="space-y-1">
+                                {message.response.suggested_actions.map((action: string, idx: number) => (
+                                  <li key={idx} className="flex items-start gap-2 text-xs text-gray-300">
+                                    <span className="text-terminal-green font-bold">{idx + 1}.</span>
+                                    <span>{action}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          {/* Citations - Evidence-Based Sources */}
+                          {message.response.citations && message.response.citations.length > 0 && (
+                            <div className="glass rounded-lg p-3 border border-blue-400/20">
+                              <h4 className="font-semibold text-blue-400 text-xs mb-2 flex items-center gap-1">
+                                <span>📚</span>
+                                <span>Evidence-Based Sources</span>
+                              </h4>
+                              <div className="space-y-2">
+                                {message.response.citations.map((citation: Citation, idx: number) => (
+                                  <div key={idx} className="text-xs text-gray-300 bg-white/5 rounded p-2">
+                                    <div className="flex items-start justify-between gap-2">
+                                      <div className="flex-1">
+                                        {citation.url ? (
+                                          <a
+                                            href={citation.url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-blue-400 hover:text-blue-300 hover:underline font-medium"
+                                          >
+                                            {citation.source}
+                                          </a>
+                                        ) : (
+                                          <span className="text-blue-400 font-medium">{citation.source}</span>
+                                        )}
+                                        <span className="text-gray-500 ml-2">
+                                          ({citation.source_type.toUpperCase()})
+                                        </span>
+                                      </div>
+                                      <span className="text-gray-500 text-xs whitespace-nowrap">
+                                        {citation.relevance}% relevant
+                                      </span>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

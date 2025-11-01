@@ -10,8 +10,10 @@ import { VoiceProvider } from './contexts/VoiceContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { Login } from './pages/Login';
 import { ParentLogin } from './pages/ParentLogin';
+import { BabysitterLogin } from './pages/BabysitterLogin';
 import { ChildInterface } from './pages/ChildInterface';
 import { ParentDashboard } from './pages/ParentDashboard';
+import { BabysitterDashboard } from './pages/BabysitterDashboard';
 import { CameraDebug } from './components/debug/CameraDebug';
 import { logger, LogCategory } from './utils/logger';
 
@@ -35,7 +37,7 @@ function App() {
     });
   }, []);
 
-  const handleLogin = (role: 'child' | 'parent') => {
+  const handleLogin = (role: 'child' | 'parent' | 'babysitter') => {
     logger.ui.action('App', `User logged in as ${role}`, { role });
   };
 
@@ -53,11 +55,17 @@ function App() {
                 {/* Parent Login Page */}
                 <Route path="/parent-login" element={<ParentLogin onLogin={handleLogin} />} />
 
+                {/* Babysitter Login Page */}
+                <Route path="/babysitter-login" element={<BabysitterLogin onLogin={handleLogin} />} />
+
                 {/* Child Interface */}
                 <Route path="/child" element={<ChildInterface />} />
 
                 {/* Parent Dashboard */}
                 <Route path="/parent" element={<ParentDashboard />} />
+
+                {/* Babysitter Dashboard */}
+                <Route path="/babysitter" element={<BabysitterDashboard />} />
 
                 {/* Camera Debug Page */}
                 <Route path="/debug/camera" element={<CameraDebug />} />
