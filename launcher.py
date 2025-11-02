@@ -18,6 +18,12 @@ try:
 except ImportError:
     requests = None  # Optional dependency for Riva health check
 
+# Get the directory where this script is located
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+# Change to the script directory to ensure all operations happen there
+os.chdir(SCRIPT_DIR)
+
 class Color:
     """Terminal colors for pretty output"""
     HEADER = '\033[95m'
@@ -37,19 +43,27 @@ def print_header(message: str):
 
 def print_success(message: str):
     """Print success message"""
-    print(f"{Color.GREEN}✓ {message}{Color.END}")
+    # Use simple characters for Windows compatibility
+    checkmark = '[OK]' if sys.platform == 'win32' else '✓'
+    print(f"{Color.GREEN}{checkmark} {message}{Color.END}")
 
 def print_error(message: str):
     """Print error message"""
-    print(f"{Color.RED}✗ {message}{Color.END}")
+    # Use simple characters for Windows compatibility
+    crossmark = '[X]' if sys.platform == 'win32' else '✗'
+    print(f"{Color.RED}{crossmark} {message}{Color.END}")
 
 def print_info(message: str):
     """Print info message"""
-    print(f"{Color.CYAN}ℹ {message}{Color.END}")
+    # Use simple characters for Windows compatibility
+    info_mark = '[i]' if sys.platform == 'win32' else 'ℹ'
+    print(f"{Color.CYAN}{info_mark} {message}{Color.END}")
 
 def print_warning(message: str):
     """Print warning message"""
-    print(f"{Color.YELLOW}⚠ {message}{Color.END}")
+    # Use simple characters for Windows compatibility
+    warning_mark = '[!]' if sys.platform == 'win32' else '⚠'
+    print(f"{Color.YELLOW}{warning_mark} {message}{Color.END}")
 
 def run_command(cmd: List[str], cwd: Optional[Path] = None) -> bool:
     """Run a shell command and return success status"""
@@ -71,7 +85,10 @@ def run_command(cmd: List[str], cwd: Optional[Path] = None) -> bool:
 def check_command_exists(command: str) -> bool:
     """Check if a command exists in PATH"""
     try:
-        subprocess.run(['which', command], check=True, capture_output=True)
+        if sys.platform == 'win32':
+            subprocess.run(['where', command], check=True, capture_output=True)
+        else:
+            subprocess.run(['which', command], check=True, capture_output=True)
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
@@ -92,27 +109,140 @@ def get_python_executable() -> str:
                 continue
     return 'python3'  # fallback
 
+def install_nodejs() -> bool:
+    """Automatically install Node.js based on the platform"""
+    print_info("Attempting to install Node.js automatically...")
+
+    try:
+        if sys.platform == 'win32':
+            # Windows: Use winget or chocolatey
+            print_info("Detected Windows platform")
+
+            # Try winget first (Windows 10+ built-in package manager)
+            if check_command_exists('winget'):
+                print_info("Using winget to install Node.js...")
+                result = subprocess.run(
+                    ['winget', 'install', 'OpenJS.NodeJS', '--accept-package-agreements', '--accept-source-agreements'],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    print_success("Node.js installed successfully via winget")
+                    print_warning("Please restart your terminal/command prompt for changes to take effect")
+                    return True
+
+            # Try chocolatey as fallback
+            if check_command_exists('choco'):
+                print_info("Using Chocolatey to install Node.js...")
+                result = subprocess.run(
+                    ['choco', 'install', 'nodejs', '-y'],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    print_success("Node.js installed successfully via Chocolatey")
+                    print_warning("Please restart your terminal/command prompt for changes to take effect")
+                    return True
+
+            # If no package manager available
+            print_error("Could not find winget or chocolatey package manager")
+            print_info("Please install Node.js manually from: https://nodejs.org/")
+            print_info("Or install Chocolatey from: https://chocolatey.org/")
+            return False
+
+        elif sys.platform == 'darwin':
+            # macOS: Use Homebrew
+            print_info("Detected macOS platform")
+
+            if check_command_exists('brew'):
+                print_info("Using Homebrew to install Node.js...")
+                subprocess.run(['brew', 'install', 'node'], check=True)
+                print_success("Node.js installed successfully via Homebrew")
+                return True
+            else:
+                print_error("Homebrew not found")
+                print_info("Install Homebrew first: /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"")
+                print_info("Or install Node.js manually from: https://nodejs.org/")
+                return False
+
+        else:
+            # Linux: Use apt, yum, or dnf based on distro
+            print_info("Detected Linux platform")
+
+            # Try apt (Debian/Ubuntu)
+            if check_command_exists('apt-get'):
+                print_info("Using apt to install Node.js...")
+                subprocess.run(['sudo', 'apt-get', 'update'], check=True)
+                subprocess.run(['sudo', 'apt-get', 'install', '-y', 'nodejs', 'npm'], check=True)
+                print_success("Node.js installed successfully via apt")
+                return True
+
+            # Try dnf (Fedora)
+            elif check_command_exists('dnf'):
+                print_info("Using dnf to install Node.js...")
+                subprocess.run(['sudo', 'dnf', 'install', '-y', 'nodejs', 'npm'], check=True)
+                print_success("Node.js installed successfully via dnf")
+                return True
+
+            # Try yum (CentOS/RHEL)
+            elif check_command_exists('yum'):
+                print_info("Using yum to install Node.js...")
+                subprocess.run(['sudo', 'yum', 'install', '-y', 'nodejs', 'npm'], check=True)
+                print_success("Node.js installed successfully via yum")
+                return True
+
+            else:
+                print_error("Could not detect package manager (apt, dnf, yum)")
+                print_info("Please install Node.js manually from: https://nodejs.org/")
+                return False
+
+    except subprocess.CalledProcessError as e:
+        print_error(f"Failed to install Node.js: {e}")
+        if e.stderr:
+            print(e.stderr.decode() if isinstance(e.stderr, bytes) else e.stderr)
+        print_info("Please install Node.js manually from: https://nodejs.org/")
+        return False
+    except Exception as e:
+        print_error(f"Unexpected error during Node.js installation: {e}")
+        print_info("Please install Node.js manually from: https://nodejs.org/")
+        return False
+
 def check_requirements() -> bool:
     """Check if required tools are installed"""
     print_header("Checking Requirements")
+
+    # For Windows, we need to use the .cmd extension for npm
+    npm_cmd = 'npm.cmd' if sys.platform == 'win32' else 'npm'
 
     requirements = {
         'docker': ['docker', '--version'],
         'docker-compose': ['docker-compose', '--version'],
         'python3': ['python3', '--version'],
         'node': ['node', '--version'],
-        'npm': ['npm', '--version'],
+        'npm': [npm_cmd, '--version'],
     }
 
     all_installed = True
+    nodejs_missing = False
+    node_installed = False
+    npm_missing = False
+
     for name, cmd in requirements.items():
         try:
             result = subprocess.run(cmd, check=True, capture_output=True, text=True)
             version = result.stdout.strip().split('\n')[0]
             print_success(f"{name} is installed ({version})")
+            if name == 'node':
+                node_installed = True
         except (subprocess.CalledProcessError, FileNotFoundError):
             print_error(f"{name} is NOT installed")
             all_installed = False
+
+            # Mark if Node.js or npm is missing
+            if name == 'node':
+                nodejs_missing = True
+            elif name == 'npm':
+                npm_missing = True
 
             # Provide installation hints
             if name == 'docker':
@@ -124,6 +254,69 @@ def check_requirements() -> bool:
             elif name == 'node' or name == 'npm':
                 print_info("Install Node.js (includes npm) from: https://nodejs.org/")
 
+    # Handle Node.js/npm installation
+    if nodejs_missing:
+        # Node.js is completely missing
+        print_warning("\nNode.js is required but not installed.")
+        response = input(f"{Color.YELLOW}Would you like to install Node.js automatically? (yes/no): {Color.END}").strip().lower()
+
+        if response in ['yes', 'y']:
+            if install_nodejs():
+                print_success("Node.js installation completed!")
+                print_warning("IMPORTANT: Please restart your terminal/command prompt and run this script again.")
+                print_info("This is necessary for the PATH changes to take effect.")
+                sys.exit(0)
+            else:
+                print_error("Automatic Node.js installation failed")
+                print_info("Please install Node.js manually from: https://nodejs.org/")
+                return False
+        else:
+            print_info("Skipping automatic Node.js installation")
+            print_info("Please install Node.js manually from: https://nodejs.org/")
+            return False
+    elif node_installed and npm_missing:
+        # Node.js is installed but npm is not detected (unusual situation)
+        print_warning("\nNode.js is installed but npm was not detected.")
+        print_info("This usually means npm is not in your PATH or Node.js installation is incomplete.")
+        print_info("\nTrying to locate npm...")
+
+        # Try to find npm in common Node.js installation locations
+        npm_found = False
+        if sys.platform == 'win32':
+            # Check common Windows npm locations
+            possible_npm_paths = [
+                Path(os.environ.get('APPDATA', '')) / 'npm' / 'npm.cmd',
+                Path(os.environ.get('ProgramFiles', '')) / 'nodejs' / 'npm.cmd',
+                Path(os.environ.get('ProgramFiles(x86)', '')) / 'nodejs' / 'npm.cmd',
+            ]
+            for npm_path in possible_npm_paths:
+                if npm_path.exists():
+                    print_success(f"Found npm at: {npm_path}")
+                    npm_found = True
+                    break
+
+        if npm_found:
+            print_warning("npm exists but is not in your PATH.")
+            print_info("Please add npm to your PATH or reinstall Node.js.")
+
+        response = input(f"{Color.YELLOW}Would you like to reinstall Node.js to fix this issue? (yes/no): {Color.END}").strip().lower()
+
+        if response in ['yes', 'y']:
+            if install_nodejs():
+                print_success("Node.js reinstallation completed!")
+                print_warning("IMPORTANT: Please restart your terminal/command prompt and run this script again.")
+                print_info("This is necessary for the PATH changes to take effect.")
+                sys.exit(0)
+            else:
+                print_error("Automatic Node.js installation failed")
+                print_info("Please reinstall Node.js manually from: https://nodejs.org/")
+                return False
+        else:
+            print_warning("Continuing without npm fix. Some features may not work.")
+            print_info("You can manually reinstall Node.js from: https://nodejs.org/")
+            # Allow continuation but mark as not fully installed
+            all_installed = False
+
     # Check for NVIDIA GPU (optional, for Riva TTS)
     try:
         subprocess.run(['nvidia-smi'], check=True, capture_output=True)
@@ -134,7 +327,9 @@ def check_requirements() -> bool:
     # Check Python version
     if all_installed:
         try:
-            result = subprocess.run(['python3', '--version'], capture_output=True, text=True, check=True)
+            # Use 'python' command on Windows if 'python3' doesn't exist
+            python_cmd = 'python3' if check_command_exists('python3') else 'python'
+            result = subprocess.run([python_cmd, '--version'], capture_output=True, text=True, check=True)
             version_str = result.stdout.strip().split()[1]
             major, minor = map(int, version_str.split('.')[:2])
             if major < 3 or (major == 3 and minor < 10):
@@ -162,13 +357,13 @@ def create_default_env_file() -> bool:
 # Get yours at: https://build.nvidia.com/
 NVIDIA_API_KEY=your_nvidia_api_key_here
 
-# OpenAI API Key (Required for vision features)
-# Get yours at: https://platform.openai.com/
-OPENAI_API_KEY=your_openai_api_key_here
-
 # ============================================
 # OPTIONAL API KEYS
 # ============================================
+
+# OpenAI API Key (Optional - For vision features)
+# Get yours at: https://platform.openai.com/
+# OPENAI_API_KEY=your_openai_api_key_here
 
 # ElevenLabs API Key (Optional - Premium TTS)
 # ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
@@ -241,10 +436,10 @@ def check_env_file() -> bool:
             # Create default .env
             create_default_env_file()
 
-        print_warning("\nIMPORTANT: Please edit .env and add your API keys!")
-        print_info(f"\n{Color.CYAN}Get your API keys:{Color.END}")
-        print_info(f"  • NVIDIA: {Color.YELLOW}https://build.nvidia.com/{Color.END}")
-        print_info(f"  • OpenAI: {Color.YELLOW}https://platform.openai.com/{Color.END}")
+        print_warning("\nIMPORTANT: Please edit .env and add your NVIDIA API key!")
+        print_info(f"\n{Color.CYAN}Get your API key:{Color.END}")
+        print_info(f"  • NVIDIA (Required): {Color.YELLOW}https://build.nvidia.com/{Color.END}")
+        print_info(f"  • OpenAI (Optional): {Color.YELLOW}https://platform.openai.com/{Color.END}")
         print_info(f"\n{Color.CYAN}Edit .env file:{Color.END}")
         print_info(f"  {Color.YELLOW}nano .env{Color.END}  # or use your preferred editor")
         return False
@@ -253,37 +448,75 @@ def check_env_file() -> bool:
     with open(env_file) as f:
         env_content = f.read()
 
-    required_keys = ['NVIDIA_API_KEY', 'OPENAI_API_KEY']
+    # Only NVIDIA API key is required, OpenAI is optional
+    required_keys = ['NVIDIA_API_KEY']
+    optional_keys = ['OPENAI_API_KEY']
     missing_keys = []
     placeholder_keys = []
+    optional_keys_status = {}
 
     for key in required_keys:
         if key not in env_content:
             missing_keys.append(key)
-        elif f"{key}=your_" in env_content or f"{key}=nvapi-" in env_content.replace(f"{key}=nvapi-xxxxxxxx", "PLACEHOLDER") or f"{key}=sk-" in env_content.replace(f"{key}=sk-xxxxxxxx", "PLACEHOLDER"):
+        else:
             # Check if it's a real key or placeholder
             lines = env_content.split('\n')
             for line in lines:
-                if line.startswith(f"{key}="):
+                if line.startswith(f"{key}=") and not line.strip().startswith('#'):
                     value = line.split('=', 1)[1].strip()
-                    if 'your_' in value or 'xxxx' in value or len(value) < 20:
+                    # Check for obvious placeholders (more specific patterns)
+                    is_placeholder = (
+                        'your_' in value or
+                        'xxxx' in value or
+                        value.endswith('_here') or
+                        value.endswith('_key_here') or
+                        value == '' or
+                        len(value) < 10
+                    )
+                    if is_placeholder:
                         placeholder_keys.append(key)
                     break
 
+    # Check optional keys
+    for key in optional_keys:
+        if key in env_content:
+            lines = env_content.split('\n')
+            for line in lines:
+                if line.startswith(f"{key}=") and not line.strip().startswith('#'):
+                    value = line.split('=', 1)[1].strip()
+                    if 'your_' in value or 'xxxx' in value or len(value) < 20:
+                        optional_keys_status[key] = 'placeholder'
+                    else:
+                        optional_keys_status[key] = 'configured'
+                    break
+        else:
+            optional_keys_status[key] = 'missing'
+
     if missing_keys:
-        print_warning(f"Missing API keys in .env: {', '.join(missing_keys)}")
+        print_warning(f"Missing required API keys in .env: {', '.join(missing_keys)}")
         print_info("Please add these keys to your .env file")
+        print_info(f"\n{Color.CYAN}Get your API keys:{Color.END}")
+        print_info(f"  • NVIDIA: {Color.YELLOW}https://build.nvidia.com/{Color.END}")
         return False
 
     if placeholder_keys:
         print_warning(f"Placeholder API keys detected: {', '.join(placeholder_keys)}")
         print_info("Please replace with valid API keys")
-        print_info(f"\n{Color.CYAN}Get your API keys:{Color.END}")
+        print_info(f"\n{Color.CYAN}Get your API key:{Color.END}")
         print_info(f"  • NVIDIA: {Color.YELLOW}https://build.nvidia.com/{Color.END}")
-        print_info(f"  • OpenAI: {Color.YELLOW}https://platform.openai.com/{Color.END}")
         return False
 
-    print_success("Environment configuration looks valid")
+    # Show status of optional keys
+    print_success("Required environment configuration is valid")
+
+    # Check OpenAI key status
+    if optional_keys_status.get('OPENAI_API_KEY') == 'configured':
+        print_success("OpenAI API key is configured (vision features enabled)")
+    else:
+        print_info("OpenAI API key not configured (vision features will be limited)")
+        print_info(f"  To enable vision features, add OPENAI_API_KEY to .env")
+        print_info(f"  Get your key at: {Color.YELLOW}https://platform.openai.com/{Color.END}")
+
     return True
 
 def check_riva_tts() -> bool:
@@ -643,6 +876,9 @@ def install_frontend_dependencies() -> bool:
         print_error("package.json not found in frontend/")
         return False
 
+    # Use npm.cmd on Windows, npm on Linux/macOS
+    npm_cmd = 'npm.cmd' if sys.platform == 'win32' else 'npm'
+
     try:
         # Check for package-lock.json or node_modules
         node_modules = frontend_path / 'node_modules'
@@ -652,7 +888,7 @@ def install_frontend_dependencies() -> bool:
         # Run npm install
         print_info("Running npm install...")
         subprocess.run(
-            ['npm', 'install'],
+            [npm_cmd, 'install'],
             cwd=frontend_path,
             check=True,
             capture_output=True,
@@ -719,9 +955,9 @@ def check_and_install_dependencies() -> bool:
     if not Path('.env').exists():
         print_warning(".env file not found, creating default...")
         create_default_env_file()
-        print_warning("Please edit .env and add your API keys!")
-        print_info(f"  • NVIDIA: {Color.YELLOW}https://build.nvidia.com/{Color.END}")
-        print_info(f"  • OpenAI: {Color.YELLOW}https://platform.openai.com/{Color.END}")
+        print_warning("Please edit .env and add your NVIDIA API key!")
+        print_info(f"  • NVIDIA (Required): {Color.YELLOW}https://build.nvidia.com/{Color.END}")
+        print_info(f"  • OpenAI (Optional): {Color.YELLOW}https://platform.openai.com/{Color.END}")
 
     backend_venv = Path('backend/venv').exists()
     frontend_node_modules = Path('frontend/node_modules').exists()
@@ -1087,9 +1323,9 @@ NVIDIA Riva TTS (Auto-Setup):
         if not check_requirements():
             sys.exit(1)
         if not check_env_file():
-            print_warning("API keys not configured!")
-            print_error("Cannot start services without valid API keys.")
-            print_info("\nPlease edit .env and add your API keys:")
+            print_warning("Required API key not configured!")
+            print_error("Cannot start services without valid NVIDIA API key.")
+            print_info("\nPlease edit .env and add your NVIDIA API key:")
             print_info(f"  {Color.YELLOW}nano .env{Color.END}")
             sys.exit(1)
         # Auto-setup is enabled by default, can be controlled via --no-riva flag
