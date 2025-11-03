@@ -10,10 +10,93 @@ from datetime import datetime
 
 from app.database.db import get_db
 from app.models.citation import CitationDB, Citation, CitationSummary
+from app.models.session import SessionDB
 from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 router = APIRouter(prefix="/api/citations", tags=["citations"])
+
+
+@router.get("/child/{child_id}", response_model=List[Citation])
+async def get_child_citations(
+    child_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get all citations for all sessions of a specific child
+    """
+    logger.info(f"Fetching citations for child: {child_id}")
+
+    # Get all session IDs for this child
+    sessions = db.query(SessionDB.session_id).filter(
+        SessionDB.child_id == child_id
+    ).all()
+
+    session_ids = [s.session_id for s in sessions]
+
+    if not session_ids:
+        logger.info(f"No sessions found for child {child_id}")
+        return []
+
+    # Get all citations for these sessions
+    citations = db.query(CitationDB).filter(
+        CitationDB.session_id.in_(session_ids)
+    ).order_by(CitationDB.timestamp.desc()).all()
+
+    logger.info(f"Found {len(citations)} citations across {len(session_ids)} sessions for child {child_id}")
+
+    return [Citation.from_orm(c) for c in citations]
+
+
+@router.get("/child/{child_id}/summary", response_model=List[CitationSummary])
+async def get_child_citations_summary(
+    child_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get summary of citations grouped by source for all sessions of a specific child
+    """
+    logger.info(f"Fetching citation summary for child: {child_id}")
+
+    # Get all session IDs for this child
+    sessions = db.query(SessionDB.session_id).filter(
+        SessionDB.child_id == child_id
+    ).all()
+
+    session_ids = [s.session_id for s in sessions]
+
+    if not session_ids:
+        logger.info(f"No sessions found for child {child_id}")
+        return []
+
+    # Group by source and count usage across all child's sessions
+    results = db.query(
+        CitationDB.source_type,
+        CitationDB.source_title,
+        CitationDB.source_url,
+        func.count(CitationDB.id).label('usage_count'),
+        func.max(CitationDB.timestamp).label('last_used')
+    ).filter(
+        CitationDB.session_id.in_(session_ids)
+    ).group_by(
+        CitationDB.source_type,
+        CitationDB.source_title,
+        CitationDB.source_url
+    ).all()
+
+    summaries = []
+    for result in results:
+        summaries.append(CitationSummary(
+            source_type=result.source_type,
+            source_title=result.source_title,
+            source_url=result.source_url,
+            usage_count=result.usage_count,
+            last_used=result.last_used
+        ))
+
+    logger.info(f"Generated {len(summaries)} citation summaries for child {child_id}")
+
+    return summaries
 
 
 @router.get("/session/{session_id}", response_model=List[Citation])

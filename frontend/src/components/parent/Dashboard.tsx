@@ -234,21 +234,10 @@ export const Dashboard: React.FC = () => {
               />
             )}
             {activeTab === 'citations' && selectedChild && (
-              activeSession ? (
-                <CitationsPanel sessionId={activeSession.session_id} />
-              ) : (
-                <div className={`${isLight ? 'bg-white border-gray-200' : 'glass-dark border-white/10'} rounded-2xl p-12 text-center border`}>
-                  <div className={`w-20 h-20 ${isLight ? 'bg-green-100 border-green-300' : 'bg-green-500/20 border-green-500/30'} rounded-full flex items-center justify-center mx-auto mb-6 border`}>
-                    <svg className={`w-10 h-10 ${isLight ? 'text-green-600' : 'text-green-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-                    </svg>
-                  </div>
-                  <p className={`${textSecondaryClass} mb-2 font-mono text-lg font-semibold`}>No Active Session</p>
-                  <p className={`${isLight ? 'text-gray-500' : 'text-gray-500'} text-sm font-mono`}>
-                    Sources and citations will appear when {selectedChild.name} is chatting with the AI.
-                  </p>
-                </div>
-              )
+              <CitationsPanel
+                childId={selectedChild.id.toString()}
+                sessionId={activeSession?.session_id}
+              />
             )}
             {activeTab === 'settings' && <Settings parentId={parentId} />}
           </Suspense>

@@ -3,7 +3,7 @@
 // ============================================================================
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { ParentSettings, ActivityType } from '../../types';
+import { ParentSettings } from '../../types';
 import api from '../../services/api';
 import { LoadingSpinner } from '../shared/LoadingSpinner';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -104,23 +104,6 @@ export const Settings: React.FC<SettingsProps> = ({ parentId }) => {
     } finally {
       setSaving(false);
     }
-  };
-
-  const toggleActivity = (activity: ActivityType) => {
-    if (!settings) return;
-
-    const allowed = settings.safety_settings.allowed_activities;
-    const newAllowed = allowed.includes(activity)
-      ? allowed.filter((a) => a !== activity)
-      : [...allowed, activity];
-
-    setSettings({
-      ...settings,
-      safety_settings: {
-        ...settings.safety_settings,
-        allowed_activities: newAllowed,
-      },
-    });
   };
 
   if (loading) {
@@ -256,50 +239,6 @@ export const Settings: React.FC<SettingsProps> = ({ parentId }) => {
                 )}
               </div>
             </button>
-          </div>
-        </div>
-
-        {/* Allowed Activities */}
-        <div className={`${cardClass} rounded-lg shadow-lg p-4`}>
-          <h3 className={`text-lg font-bold mb-3 ${textPrimaryClass}`}>Allowed Activities</h3>
-
-          <div className="grid grid-cols-2 gap-2">
-            {Object.values(ActivityType).map((activity) => {
-              const icons: Record<ActivityType, string> = {
-                [ActivityType.STORY_TIME]: '📚',
-                [ActivityType.I_SPY]: '🔍',
-                [ActivityType.HOMEWORK_HELPER]: '✏️',
-                [ActivityType.FREE_CHAT]: '💬',
-              };
-
-              const isChecked = settings.safety_settings.allowed_activities.includes(activity);
-              return (
-                <label
-                  key={activity}
-                  className={`flex items-center gap-2 p-2.5 border-2 rounded-lg cursor-pointer transition-colors ${
-                    isChecked
-                      ? 'border-green-500 bg-green-50'
-                      : isLight
-                      ? 'border-gray-300 hover:bg-gray-50'
-                      : 'border-white/20 hover:bg-white/5'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={isChecked}
-                    onChange={() => toggleActivity(activity)}
-                    className="w-4 h-4 accent-green-500"
-                  />
-                  <span className="text-lg">{icons[activity]}</span>
-                  <span className={`text-sm font-semibold capitalize ${isChecked ? 'text-gray-800' : textPrimaryClass}`}>
-                    {activity.replace('_', ' ')}
-                  </span>
-                  {isChecked && (
-                    <span className="ml-auto text-green-600 text-xs">✓</span>
-                  )}
-                </label>
-              );
-            })}
           </div>
         </div>
 

@@ -31,10 +31,20 @@ export const useWindowScale = (
       const width = window.innerWidth;
       const height = window.innerHeight;
 
-      // Calculate scale based on both width and height, use the smaller one
-      const widthScale = width / baseWidth;
-      const heightScale = height / baseHeight;
-      const scale = Math.min(widthScale, heightScale, 1); // Never scale up beyond 1
+      // Use a more conservative scaling approach
+      // Only scale down significantly on very small screens
+      let scale = 1;
+
+      if (width < 768) {
+        // Mobile devices - use minimal scaling, let responsive design handle it
+        scale = 1;
+      } else if (width < 1024) {
+        // Tablets - slight scaling if needed
+        scale = Math.max(width / baseWidth, 0.85);
+      } else {
+        // Desktop - only scale down on smaller desktop screens
+        scale = Math.min(Math.max(width / baseWidth, 0.9), 1);
+      }
 
       setWindowScale({
         scale,
@@ -46,12 +56,19 @@ export const useWindowScale = (
     // Calculate initial scale
     calculateScale();
 
-    // Recalculate on window resize
-    window.addEventListener('resize', calculateScale);
+    // Recalculate on window resize with debounce
+    let timeoutId: NodeJS.Timeout;
+    const debouncedCalculate = () => {
+      clearTimeout(timeoutId);
+      timeoutId = setTimeout(calculateScale, 100);
+    };
+
+    window.addEventListener('resize', debouncedCalculate);
     window.addEventListener('orientationchange', calculateScale);
 
     return () => {
-      window.removeEventListener('resize', calculateScale);
+      clearTimeout(timeoutId);
+      window.removeEventListener('resize', debouncedCalculate);
       window.removeEventListener('orientationchange', calculateScale);
     };
   }, [baseWidth, baseHeight]);

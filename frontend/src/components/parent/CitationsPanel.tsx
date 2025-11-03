@@ -25,10 +25,11 @@ interface CitationSummary {
 }
 
 interface CitationsPanelProps {
-  sessionId: string;
+  sessionId?: string;  // Optional - if provided, show only this session
+  childId: string;      // Required - show all citations for this child
 }
 
-const CitationsPanel: React.FC<CitationsPanelProps> = ({ sessionId }) => {
+const CitationsPanel: React.FC<CitationsPanelProps> = ({ sessionId, childId }) => {
   const { parentTheme } = useTheme();
   const isLight = parentTheme === 'light';
 
@@ -44,14 +45,15 @@ const CitationsPanel: React.FC<CitationsPanelProps> = ({ sessionId }) => {
     try {
       setLoading(true);
 
+      // Use child_id to get all citations across all sessions for this child
       if (view === 'summary') {
         const response = await axios.get(
-          `${API_URL}/api/citations/session/${sessionId}/summary`
+          `${API_URL}/api/citations/child/${childId}/summary`
         );
         setSummaries(response.data);
       } else {
         const response = await axios.get(
-          `${API_URL}/api/citations/session/${sessionId}`
+          `${API_URL}/api/citations/child/${childId}`
         );
         setCitations(response.data);
       }
@@ -60,7 +62,7 @@ const CitationsPanel: React.FC<CitationsPanelProps> = ({ sessionId }) => {
     } finally {
       setLoading(false);
     }
-  }, [sessionId, view, API_URL]);
+  }, [childId, view, API_URL]);
 
   useEffect(() => {
     fetchCitations();
@@ -166,9 +168,18 @@ const CitationsPanel: React.FC<CitationsPanelProps> = ({ sessionId }) => {
         // Summary View
         <div className="space-y-4">
           {summaries.length === 0 ? (
-            <p className={`text-center ${isLight ? 'text-gray-500' : 'text-gray-400'} py-8`}>
-              No citations yet. Sources will appear here when the AI uses trusted information.
-            </p>
+            <div className={`text-center ${isLight ? 'text-gray-500' : 'text-gray-400'} py-12`}>
+              <div className={`w-20 h-20 ${isLight ? 'bg-blue-100 border-blue-300' : 'bg-blue-500/20 border-blue-500/30'} rounded-full flex items-center justify-center mx-auto mb-6 border`}>
+                <svg className={`w-10 h-10 ${isLight ? 'text-blue-600' : 'text-blue-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                </svg>
+              </div>
+              <p className="font-semibold mb-2">No sources yet</p>
+              <p className="text-sm">
+                When the AI uses trusted information from CDC, CPSC, or NIH to answer questions,
+                sources will appear here.
+              </p>
+            </div>
           ) : (
             summaries.map((summary, index) => (
               <div
@@ -205,9 +216,18 @@ const CitationsPanel: React.FC<CitationsPanelProps> = ({ sessionId }) => {
         // Detailed View
         <div className="space-y-3">
           {citations.length === 0 ? (
-            <p className={`text-center ${isLight ? 'text-gray-500' : 'text-gray-400'} py-8`}>
-              No detailed citations available yet.
-            </p>
+            <div className={`text-center ${isLight ? 'text-gray-500' : 'text-gray-400'} py-12`}>
+              <div className={`w-20 h-20 ${isLight ? 'bg-blue-100 border-blue-300' : 'bg-blue-500/20 border-blue-500/30'} rounded-full flex items-center justify-center mx-auto mb-6 border`}>
+                <svg className={`w-10 h-10 ${isLight ? 'text-blue-600' : 'text-blue-400'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                </svg>
+              </div>
+              <p className="font-semibold mb-2">No citations yet</p>
+              <p className="text-sm">
+                When the AI uses trusted information from CDC, CPSC, or NIH to answer questions,
+                detailed citations will appear here.
+              </p>
+            </div>
           ) : (
             citations.map((citation) => (
               <div key={citation.id} className={`border ${isLight ? 'border-gray-200' : 'border-white/10'} rounded-lg`}>

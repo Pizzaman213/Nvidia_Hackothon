@@ -42,8 +42,9 @@ function ScaleWrapper({ children }: { children: React.ReactNode }) {
     });
   }, [scale, width]);
 
-  // Only apply scaling on larger screens (not mobile)
-  const shouldScale = width >= 768;
+  // Disable scaling - let responsive CSS handle everything
+  // This prevents the stretched appearance in parent dashboard
+  const shouldScale = false;
 
   const style: React.CSSProperties = shouldScale
     ? {
